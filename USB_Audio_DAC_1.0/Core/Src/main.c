@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+# include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,7 +46,10 @@ DMA_HandleTypeDef hdma_spi2_tx;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
+#define AUDIO_BUFFER_SIZE 256
 
+int16_t AUDIO_BUFFER[AUDIO_BUFFER_SIZE] = {0};
+volatile uint32_t currentSampleIndex = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,6 +100,14 @@ int main(void)
   MX_I2S2_Init();
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
+
+  // Generate 1 KHz Sine Wave 
+  for(int i=0; i < AUDIO_BUFFER_SIZE; i++){
+    float sample = sinf( 2 * 3.14159f * 1000.0f * ((float)i / 44100.0f) );
+    AUDIO_BUFFER[i] = (int16_t)(sample * 32767.0f * 0.5f); // Scale to 16-bit signed integer range
+  }
+  // Start I2S Circular DMA Playback
+  HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t*) AUDIO_BUFFER, AUDIO_BUFFER_SIZE);
 
   /* USER CODE END 2 */
 
@@ -179,9 +190,9 @@ static void MX_I2S2_Init(void)
   hi2s2.Instance = SPI2;
   hi2s2.Init.Mode = I2S_MODE_MASTER_TX;
   hi2s2.Init.Standard = I2S_STANDARD_PHILIPS;
-  hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B_EXTENDED;
-  hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_ENABLE;
-  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_48K;
+  hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B;
+  hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_DISABLE;
+  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_44K;
   hi2s2.Init.CPOL = I2S_CPOL_LOW;
   hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
   hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
@@ -312,6 +323,16 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s){
+  // DMA Reached Halfway Point - Nothing to do here for Now.
+}
+
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s){
+  // DMA Transfer Complete and Wraps back to Start of the Buffer - Nothing to do here in Circular Mode.
+}
+
+
 
 /* USER CODE END 4 */
 
