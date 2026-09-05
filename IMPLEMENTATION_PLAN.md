@@ -44,11 +44,11 @@ The STM32F411CEU6 Black Pill enumerates as a USB Audio Class 1.0 device. When co
 ```
 PC (music source)
     │
-    │  USB Full-Speed (12 Mbps)
+    │  USB Full-Speed (12 Mbps) — 44.1 kHz, 16-bit, mono
     ▼
 STM32F411 Black Pill
-    ├── USB OTG FS  ─── receives audio packets
-    ├── I2S2        ─── outputs PCM to MAX98357A
+    ├── USB OTG FS  ─── receives audio packets (44.1 kHz mono)
+    ├── I2S2        ─── outputs PCM to MAX98357A (44.117 kHz)
     ├── DMA1        ─── moves PCM samples to I2S
     ├── I2C1        ─── drives SSD1306 OLED
     ├── TIM4 (encoder mode) ─── reads rotary encoder
@@ -87,25 +87,26 @@ The firmware is built in **8 phases**, each with a clean, demonstrable deliverab
 ---
 
 ### **Phase 1 — Clock Tree from Scratch** ✅
-**Goal:** Configure HSE → PLL → 60 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S clock
+**Goal:** Configure HSE → PLL → 48 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S clock
 **Peripherals:** RCC, PLL, PWR
 **Time:** Day 2-4
 
 **Tasks Completed:**
 - [x] Read RM0383 Chapter 6 (RCC) — PLL configuration flow
 - [x] Enable HSE (25 MHz external crystal on Black Pill, PH0/PH1)
-- [x] Configure main PLL: PLLM=15, PLLN=144, PLLP=4, PLLQ=5 → 60 MHz SYSCLK + 48 MHz USB
+- [x] Configure main PLL: PLLM=25, PLLN=384, PLLP=DIV8, PLLQ=8 → 48 MHz SYSCLK + 48 MHz USB
 - [x] Configure PLLI2S: PLLI2SM=25, PLLI2SN=192, PLLI2SR=4 → 48 MHz I2SCLK
 - [x] Verify clock config via CubeMX validation (no red warnings)
-- [x] AHB Prescaler = 1 (HCLK = 60 MHz), APB1 Prescaler = 1, APB2 Prescaler = 1
-- [x] FLASH_LATENCY_1 for 60 MHz @ 2.7-3.6 V
+- [x] AHB Prescaler = 1 (HCLK = 48 MHz), APB1 Prescaler = 2, APB2 Prescaler = 1
+- [x] FLASH_LATENCY_1 for 48 MHz @ 2.7-3.6 V
 - [x] **Abandoned external I2S_CKIN plan:** PI0 is not exposed on the F411 CEU6 (UFQFPN48) package. PLLI2S at 48 MHz gives equivalent audio quality without extra hardware.
+- [x] **Simplified from an earlier 60 MHz SYSCLK plan** (`M=15, N=144, P=4`) to 48 MHz so the whole system runs at a single frequency. Less to debug, same headroom for USB + I2S + later RTOS tasks.
 
 **Final Configuration:**
 ```
 HSE = 25.000 MHz (PH0/PH1 crystal)
-SYSCLK = 60.000 MHz (PLL: M=15, N=144, P=4)
-USBCLK = 48.000 MHz (PLLQ=5)
+SYSCLK = 48.000 MHz (PLL: M=25, N=384, P=DIV8)
+USBCLK = 48.000 MHz (PLLQ=8)
 I2SCLK = 48.000 MHz (PLLI2S: M=25, N=192, R=4)
 CSS Enabled for clock fault detection
 FLASH_LATENCY_1
@@ -158,71 +159,77 @@ FLASH_LATENCY_1
 
 ---
 
-### **Phase 3 — USB Audio Class 1.0 Device** 🔄
+### **Phase 3 — USB Audio Class 1.0 Device** ✅
 **Goal:** PC recognizes Black Pill as a USB speaker, audio packets from PC play through MAX98357A
 **Peripherals:** USB OTG FS (PA11/PA12), I2S2 + DMA1 (Phase 2)
 **Time:** Day 7-12
-**Mode:** TUTOR — I generate the boring error-prone part (descriptors), you write the audio plumbing (ring buffer + I2S refill callbacks)
+**Mode:** TUTOR — I generated the descriptors + ST-library glue, you wrote the audio plumbing (ring buffer + I2S refill callbacks). Full debugging story is in `PROGRESS.md` → Phase 3 (three silent-failure bugs each took an evening to track down — read it before re-touching the USB code).
 
 **Architecture:**
 ```
-USB_PC ──USB──▶ usb_audio.c ──▶ ring_buffer.c ──▶ audio_i2s.c ──▶ MAX98357A
-                (descriptors,     (SPSC ring,         (DMA half/cplt
-                 isochronous        ~480 samples        callbacks
-                 OUT callback)      = 10 ms @ 48 kHz)   refill from ring)
+USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_buffer.c ──▶ audio_i2s.c ──▶ MAX98357A
+                (ST class        (user-side          (SPSC ring,         (DMA half/cplt
+                 driver,          glue: AUDIO_         1024 samples        callbacks
+                 isochronous      CMD_PLAY →          = 23 ms @ 44.1      refill from
+                 OUT handler)     RingBuffer_Write)    kHz)                ring, silence
+                                                                             on underrun)
 ```
 
 **Audio format (advertised in USB descriptor):**
-- 48 kHz, 16-bit, **mono** (MAX98357A on our board is mono)
-- Implicit feedback — PC's clock is master (simpler, matches reference project)
-- Isochronous OUT endpoint 0x01, 48-byte packets every 1 ms (48 mono samples)
-- I2S2 must run at exactly 48 kHz to keep the ring steady
+- **44.1 kHz, 16-bit, mono** (MAX98357A on our board is mono; I2S2 clocks at 44.117 kHz real)
+- Implicit feedback — PC's clock is master
+- Isochronous OUT endpoint 0x01, **88-byte packets every 1 ms** (44 mono int16 samples = 1 ms of audio)
+- `AUDIO_OUT_PACKET = (USBD_AUDIO_FREQ * 2) / 1000 = 88`. Must agree with both the descriptor and the I2S clock or the ring overruns/underruns and you get silence.
 
-**File breakdown — who writes what:**
+**File breakdown — who wrote what:**
 
 | File | Written by | Purpose |
 |---|---|---|
-| `Middlewares/ST/STM32_USB_Device_Library/.../usbd_audio.c/.h` | CubeMX generate | ST's class driver |
-| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_audio_if.c` | **Me** | Descriptor tables, product string, init flow |
-| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_conf.c` | **Me** | ST library glue (PCD callbacks → USBD core) |
-| `Core/Src/ring_buffer.c` + `Core/Inc/ring_buffer.h` | **You** | Lock-free SPSC ring: `write`, `read`, `available`, `space`, `reset` |
-| `Core/Src/usb_audio.c` | **Me** (you read) | 3 ST-library callbacks: `AUDIO_Init`, `AUDIO_DeInit`, `AUDIO_ReceiveCallBack` (copies packet into ring) |
-| `Core/Src/audio_i2s.c` + `Core/Inc/audio_i2s.h` | **You** | Extract DMA half/cplt callbacks from `main.c`; refill the just-played half from the ring (silence on underrun) |
-| `Core/Src/main.c` | **You** | Init order: HAL → I2S2 + start circular DMA → USB device stack → main loop polls |
+| `USB_Audio_DAC_1.0/Middlewares/ST/STM32_USB_Device_Library/...` | ST vendor | Unmodified USB Audio class driver + OTG FS core. Provided by the library, not hand-written. |
+| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_audio_if.c` | Tutor | Bridges the class driver to our ring buffer. `AUDIO_AudioCmd_FS` is the user-side hook that the class driver calls with `AUDIO_CMD_PLAY` when a fresh USB packet arrives; this is where `RingBuffer_Write` lives. `TransferComplete_CallBack_FS` / `HalfTransfer_CallBack_FS` are the user-side hooks called by `USBD_AUDIO_Sync`. |
+| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_desc.c` | Tutor | Device descriptor + configuration descriptor; one mono streaming endpoint, bNrChannels=1. |
+| `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.c` | Tutor | HAL_PCD_MspInit, USBD static-malloc hooks, **vbus_sensing = DISABLE** (Bug 1). |
+| `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.h` | Tutor | **`#define USBD_AUDIO_FREQ 44100U`** — must match the .ioc or you get Bug 2. |
+| `USB_Audio_DAC_1.0/Core/Src/ring_buffer.c` + `.h` | Student | Lock-free SPSC ring: `Reset`, `Write`, `Read`, `Available`, `Space`. 1024 int16, power of 2. |
+| `USB_Audio_DAC_1.0/Core/Src/audio_i2s.c` + `.h` | Student | Pulls mono samples from the ring and lays them into the I2S DMA buffer as L=R stereo. `RefillHalfA` / `RefillHalfB` are the consumer side of the SPSC ring. Underrun = silence (memset to 0). |
+| `USB_Audio_DAC_1.0/Core/Src/stm32f4xx_it.c` | Tutor | HAL I2S callbacks invoke `HalfTransfer_CallBack_FS` / `TransferComplete_CallBack_FS` **first** (Bug 3) and `AudioI2S_RefillHalfA/B` second. Order matters. |
+| `USB_Audio_DAC_1.0/Core/Src/main.c` | Student | Init order: HAL → I2S2 + start circular DMA → USB device stack → main loop. |
 
-**Build order with verification:**
+**What we actually built (replaces the earlier "build order with verification" plan):**
 
-| # | Action | Verifies with |
+| Step | What | Verifies with |
 |---|---|---|
-| 1 | In `.ioc`: enable `USB_DEVICE` middleware → Audio Class 1.0. Regenerate code. | `make` succeeds; `Middlewares/.../usbd_audio.*` appears |
-| 2 | **Me:** write `usbd_audio_if.c` descriptor tables + `usbd_conf.c` glue | `make` succeeds |
-| 3 | Flash empty-USB firmware. Plug into PC. | `lsusb` shows bInterfaceClass=1 (Audio). Linux `dmesg` shows no enumeration errors. **Milestone 3a — Enumerate** |
-| 4 | **You:** write `ring_buffer.c` with the 5 functions. Test in `main()`: write 100, read 100, check order. | Manual: a USART2 print shows the count is preserved |
-| 5 | **Me:** wire `AUDIO_ReceiveCallBack` → ring write | Plug in → USART2 prints "ring used: 48/480" every 1 ms. **Milestone 3b — Capture** |
-| 6 | **You:** move I2S DMA half/cplt callbacks into `audio_i2s.c`; refill from ring; write silence on underrun | `speaker-test -D plughw:1,0 -c 1 -r 48000 -f 1000` → hear 1 kHz tone from speaker. **Milestone 3c — Pipe** |
-| 7 | Play YouTube / any audio | Hear it. **Phase 3 done** |
+| 1 | `.ioc`: enable `USB_OTG_FS` as Device_Only, `USB_DEVICE` middleware → Audio Class 1.0, `USBD_AUDIO_FREQ=44100`, I2S2 at 44.1K with DMA1 Stream 4. Regenerate. | `make` succeeds; `Middlewares/.../usbd_audio.*` appears. |
+| 2 | Vendor library: copy ST USB Device Library into `Middlewares/ST/STM32_USB_Device_Library/`. | `make` still succeeds. |
+| 3 | Write `USB_DEVICE/App/usbd_audio_if.c`, `usbd_desc.c`, `Target/usbd_conf.c/.h`. | `make` succeeds; `lsusb` shows `bInterfaceClass=1 Audio` (after Bug 1 fix). |
+| 4 | Write `Core/Src/ring_buffer.c` (SPSC, 1024 samples) and `Core/Src/audio_i2s.c` (pull from ring, lay into I2S DMA buffer as L=R). | `make` succeeds; ring logic testable in isolation. |
+| 5 | Wire `AUDIO_AudioCmd_FS` (AUDIO_CMD_PLAY) → `RingBuffer_Write`. Wire `USBD_AUDIO_Sync` call from HAL I2S callbacks (Bug 3). | `speaker-test -D plughw:2,0 -c 1 -r 44100 -t sine -f 1000` plays 1 kHz out of speaker. **Phase 3 done.** |
+| 6 | Verify with `aplay` on a real WAV. | Music plays. |
 
 **Key descriptor bytes (so the next reader knows what to expect):**
-- `bNrChannels = 1`, `bSubSlotSize = 2`, `bBitResolution = 16`, `tSamFreq = 0x00BB80` (48000)
-- `wMaxPacketSize = 48`, `bInterval = 1`
+- `bNrChannels = 1`, `bSubSlotSize = 2`, `bBitResolution = 16`, `tSamFreq = 0x00AC44` (44100)
+- `wMaxPacketSize = 88`, `bInterval = 1`
 - `bmAttributes = 0x01` (Async) — implicit feedback, PC is clock master
-- `bSynchAddress = 0` — no explicit feedback endpoint (matches our clocking choice)
+- `bSynchAddress = 0` — no explicit feedback endpoint
 
 **What you'll have learned by the end of Phase 3:**
 - USB descriptors (what each byte means)
 - USB isochronous endpoints and implicit-feedback clocking
+- VBUS sensing on OTG FS — and when to disable it
+- The ST USB Audio library's split-API model (class driver → user via `AUDIO_*_FS` callbacks; user → class driver via `USBD_AUDIO_Sync`)
 - Lock-free SPSC ring buffers (used in every audio device ever)
 - The I2S half/complete callback pattern (used in every DMA audio pipeline)
-- How PC and embedded negotiate audio format
+- How PC and embedded negotiate audio format, and what happens when they disagree
 
 **Acceptance test:**
-- [ ] `lsusb` shows device with bInterfaceClass=1
-- [ ] `aplay -l` (Linux) / Sound Settings (Windows) shows "USB Speaker"
-- [ ] `speaker-test -D plughw:1,0 -c 1 -r 48000 -f 1000` plays 1 kHz out of speaker
-- [ ] YouTube audio plays
-- [ ] Unplug → no PC error, replug → resumes
+- [x] `lsusb -v` shows device with bInterfaceClass=1 Audio
+- [x] `aplay -l` (Linux) shows "USB Speaker"
+- [x] `speaker-test -D plughw:2,0 -c 1 -r 44100 -t sine -f 1000` plays 1 kHz out of speaker
+- [x] YouTube / `aplay` audio plays
+- [x] Unplug → no PC error, replug → resumes
+- [ ] 10-min stress test (no dropouts, ring stays bounded) — deferred, see PROGRESS.md "Deferred Items"
 
-**Deliverable:** PC plays music through the Black Pill → speaker
+**Deliverable:** PC plays music through the Black Pill → speaker. Phase 3 complete.
 
 ---
 
@@ -368,9 +375,9 @@ Core/
 ## 8. Verification Checklist
 
 - [x] Phase 0: LED blinks, "Hello World" prints on serial ✅
-- [x] Phase 1: Clock tree configured (HSE=25MHz, SYSCLK=60MHz, USBCLK=48MHz, I2SCLK=48MHz from PLLI2S) ✅
+- [x] Phase 1: Clock tree configured (HSE=25 MHz, SYSCLK=48 MHz, USBCLK=48 MHz, I2SCLK=48 MHz from PLLI2S) ✅
 - [x] Phase 2: **1 kHz tone verified on online frequency meter** ✅
-- [ ] Phase 3: **In progress — design locked, build step 1 next** (see Phase 3 section)
+- [x] Phase 3: **PC plays audio through MAX98357A** — `lsusb` shows Audio class, `speaker-test -f 1000/2000/3000/4000` all audible, `aplay` on WAV works. See Phase 3 section for the three-bug story. ✅
 - [ ] Phase 4: Encoder rotates → volume changes, press → mute
 - [ ] Phase 5: TFT shows live volume and audio level
 - [ ] Phase 6: 30-min stress test passes with all RTOS tasks running
@@ -393,7 +400,7 @@ Core/
 
 By completion, you will have hands-on experience with:
 - ARM Cortex-M4 architecture (NVIC, FPU, SysTick)
-- Clock tree design (HSE → PLL → 60 MHz, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S)
+- Clock tree design (HSE → PLL → 48 MHz, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S)
 - Digital audio protocols (I2S, BCLK/LRCLK framing)
 - DMA controller (circular buffers, double-buffering)
 - USB 2.0 Full-Speed device (descriptors, endpoints, audio class)
