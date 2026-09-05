@@ -126,13 +126,34 @@ FLASH_LATENCY_1
 
 ---
 
-## Phase 3 — USB Audio Class 1.0 Device
+## Phase 3 — USB Audio Class 1.0 Device 🔄
 
 | Status | Task |
 |--------|------|
-| ⏳ | Not started |
+| 🔄 | **In progress** |
 
 **Goal:** PC sees the Black Pill as a USB speaker. Audio from PC plays through the board.
+
+**Design (see `IMPLEMENTATION_PLAN.md` → Phase 3 for full detail):**
+- Audio format advertised to PC: 48 kHz, 16-bit, **mono**, implicit feedback (PC clock master)
+- Isochronous OUT endpoint 0x01, 48-byte packets every 1 ms
+- `usb_audio.c` → `ring_buffer.c` (SPSC, ~10 ms = 480 samples) → `audio_i2s.c` → MAX98357A
+- I2S2 DMA half/cplt callbacks refill the just-played half from the ring (silence on underrun)
+- TUTOR mode: I write descriptors + ST-library glue, you write `ring_buffer.c` + `audio_i2s.c` refill callbacks
+
+**Milestones:**
+- **3a — Enumerate:** `lsusb` shows the board as Audio class (no sound yet)
+- **3b — Capture:** USB packets land in a memory buffer, USART2 prints ring depth
+- **3c — Pipe:** USB → ring → I2S → speaker (the magic moment)
+
+**Build order:**
+1. Add USB Device middleware to `.ioc` (Audio Class 1.0), regenerate
+2. I write `usbd_audio_if.c` descriptors + `usbd_conf.c` glue
+3. Flash + verify enumeration (3a)
+4. You write `ring_buffer.c` (SPSC, 5 functions)
+5. I wire `AUDIO_ReceiveCallBack` → ring write, verify (3b)
+6. You move I2S callbacks to `audio_i2s.c` and refill from ring, verify with `speaker-test` (3c)
+7. YouTube / any audio plays → Phase 3 done
 
 ---
 
@@ -173,6 +194,16 @@ FLASH_LATENCY_1
 | ⏳ | Not started |
 
 **Goal:** README, learning journal, demo.
+
+---
+
+## Deferred Items
+
+| Status | Item | Notes |
+|--------|------|-------|
+| ⏳ | Add `.ccmram` section to `STM32F411xx_FLASH.ld` | Reviewer flagged that the 64 KB CCMRAM at 0x10000000 is currently undeclared. No code needs it yet, but once added it should NOT be used for audio/DMA buffers (CCMRAM is CPU-only). Add when we need fast CPU scratch (e.g., spectrum-analyzer FFT in Phase 5). |
+| ⏳ | Bump stack 0x800 → 0x1000 | Currently fits USB + I2S callbacks. Needs the extra 2 KB once `printf` is added (Phase 4 debug logs or FreeRTOS in Phase 6). |
+| ⏳ | Wire `AUDIO_VolumeCtl_FS` | Currently a no-op. Phase 4 connects the rotary encoder to this hook. |
 
 ---
 

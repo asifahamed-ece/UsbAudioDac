@@ -158,22 +158,69 @@ FLASH_LATENCY_1
 
 ---
 
-### **Phase 3 — USB Audio Class 1.0 Device**
-**Goal:** PC recognizes Black Pill as a USB speaker, music plays
-**Peripherals:** USB OTG FS, NVIC, GPIO (PA11/PA12)
+### **Phase 3 — USB Audio Class 1.0 Device** 🔄
+**Goal:** PC recognizes Black Pill as a USB speaker, audio packets from PC play through MAX98357A
+**Peripherals:** USB OTG FS (PA11/PA12), I2S2 + DMA1 (Phase 2)
 **Time:** Day 7-12
+**Mode:** TUTOR — I generate the boring error-prone part (descriptors), you write the audio plumbing (ring buffer + I2S refill callbacks)
 
-**Tasks:**
-- [ ] Read RM0383 Chapter 31 (USB OTG FS)
-- [ ] Enable USB_OTG_FS as Device in CubeMX
-- [ ] Add USB Device middleware: Audio Class 1.0
-- [ ] Configure USB clock: 48 MHz required (from PLLQ=5 — already configured in Phase 1)
-- [ ] Customize audio descriptors: 48 kHz, 16-bit, mono
-- [ ] Implement USB audio receive callback: copy incoming packets to I2S DMA buffer
-- [ ] Add double-buffered ring buffer between USB and I2S
-- [ ] Handle underrun (silence) gracefully
-- [ ] Plug into PC: check "USB Audio Device" appears in Sound settings
-- [ ] Play music, hear it on speaker
+**Architecture:**
+```
+USB_PC ──USB──▶ usb_audio.c ──▶ ring_buffer.c ──▶ audio_i2s.c ──▶ MAX98357A
+                (descriptors,     (SPSC ring,         (DMA half/cplt
+                 isochronous        ~480 samples        callbacks
+                 OUT callback)      = 10 ms @ 48 kHz)   refill from ring)
+```
+
+**Audio format (advertised in USB descriptor):**
+- 48 kHz, 16-bit, **mono** (MAX98357A on our board is mono)
+- Implicit feedback — PC's clock is master (simpler, matches reference project)
+- Isochronous OUT endpoint 0x01, 48-byte packets every 1 ms (48 mono samples)
+- I2S2 must run at exactly 48 kHz to keep the ring steady
+
+**File breakdown — who writes what:**
+
+| File | Written by | Purpose |
+|---|---|---|
+| `Middlewares/ST/STM32_USB_Device_Library/.../usbd_audio.c/.h` | CubeMX generate | ST's class driver |
+| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_audio_if.c` | **Me** | Descriptor tables, product string, init flow |
+| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_conf.c` | **Me** | ST library glue (PCD callbacks → USBD core) |
+| `Core/Src/ring_buffer.c` + `Core/Inc/ring_buffer.h` | **You** | Lock-free SPSC ring: `write`, `read`, `available`, `space`, `reset` |
+| `Core/Src/usb_audio.c` | **Me** (you read) | 3 ST-library callbacks: `AUDIO_Init`, `AUDIO_DeInit`, `AUDIO_ReceiveCallBack` (copies packet into ring) |
+| `Core/Src/audio_i2s.c` + `Core/Inc/audio_i2s.h` | **You** | Extract DMA half/cplt callbacks from `main.c`; refill the just-played half from the ring (silence on underrun) |
+| `Core/Src/main.c` | **You** | Init order: HAL → I2S2 + start circular DMA → USB device stack → main loop polls |
+
+**Build order with verification:**
+
+| # | Action | Verifies with |
+|---|---|---|
+| 1 | In `.ioc`: enable `USB_DEVICE` middleware → Audio Class 1.0. Regenerate code. | `make` succeeds; `Middlewares/.../usbd_audio.*` appears |
+| 2 | **Me:** write `usbd_audio_if.c` descriptor tables + `usbd_conf.c` glue | `make` succeeds |
+| 3 | Flash empty-USB firmware. Plug into PC. | `lsusb` shows bInterfaceClass=1 (Audio). Linux `dmesg` shows no enumeration errors. **Milestone 3a — Enumerate** |
+| 4 | **You:** write `ring_buffer.c` with the 5 functions. Test in `main()`: write 100, read 100, check order. | Manual: a USART2 print shows the count is preserved |
+| 5 | **Me:** wire `AUDIO_ReceiveCallBack` → ring write | Plug in → USART2 prints "ring used: 48/480" every 1 ms. **Milestone 3b — Capture** |
+| 6 | **You:** move I2S DMA half/cplt callbacks into `audio_i2s.c`; refill from ring; write silence on underrun | `speaker-test -D plughw:1,0 -c 1 -r 48000 -f 1000` → hear 1 kHz tone from speaker. **Milestone 3c — Pipe** |
+| 7 | Play YouTube / any audio | Hear it. **Phase 3 done** |
+
+**Key descriptor bytes (so the next reader knows what to expect):**
+- `bNrChannels = 1`, `bSubSlotSize = 2`, `bBitResolution = 16`, `tSamFreq = 0x00BB80` (48000)
+- `wMaxPacketSize = 48`, `bInterval = 1`
+- `bmAttributes = 0x01` (Async) — implicit feedback, PC is clock master
+- `bSynchAddress = 0` — no explicit feedback endpoint (matches our clocking choice)
+
+**What you'll have learned by the end of Phase 3:**
+- USB descriptors (what each byte means)
+- USB isochronous endpoints and implicit-feedback clocking
+- Lock-free SPSC ring buffers (used in every audio device ever)
+- The I2S half/complete callback pattern (used in every DMA audio pipeline)
+- How PC and embedded negotiate audio format
+
+**Acceptance test:**
+- [ ] `lsusb` shows device with bInterfaceClass=1
+- [ ] `aplay -l` (Linux) / Sound Settings (Windows) shows "USB Speaker"
+- [ ] `speaker-test -D plughw:1,0 -c 1 -r 48000 -f 1000` plays 1 kHz out of speaker
+- [ ] YouTube audio plays
+- [ ] Unplug → no PC error, replug → resumes
 
 **Deliverable:** PC plays music through the Black Pill → speaker
 
@@ -323,7 +370,7 @@ Core/
 - [x] Phase 0: LED blinks, "Hello World" prints on serial ✅
 - [x] Phase 1: Clock tree configured (HSE=25MHz, SYSCLK=60MHz, USBCLK=48MHz, I2SCLK=48MHz from PLLI2S) ✅
 - [x] Phase 2: **1 kHz tone verified on online frequency meter** ✅
-- [ ] Phase 3: PC shows "USB Audio Device" in Sound settings, music plays
+- [ ] Phase 3: **In progress — design locked, build step 1 next** (see Phase 3 section)
 - [ ] Phase 4: Encoder rotates → volume changes, press → mute
 - [ ] Phase 5: TFT shows live volume and audio level
 - [ ] Phase 6: 30-min stress test passes with all RTOS tasks running
