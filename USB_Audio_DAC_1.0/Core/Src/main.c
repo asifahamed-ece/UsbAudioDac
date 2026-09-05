@@ -46,7 +46,10 @@ DMA_HandleTypeDef hdma_spi2_tx;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-#define AUDIO_BUFFER_SIZE 256
+/* 882 int16 = 441 stereo frames = 10 ms = exactly 10 cycles of 1 kHz at 44.1 kHz
+ * I2S pairs samples into L+R frames, so each int16 = half a frame.
+ * Buffer MUST contain an integer number of output-frequency cycles for seamless loop. */
+#define AUDIO_BUFFER_SIZE 882
 
 int16_t AUDIO_BUFFER[AUDIO_BUFFER_SIZE] = {0};
 volatile uint32_t currentSampleIndex = 0;
@@ -101,10 +104,17 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
 
-  // Generate 1 KHz Sine Wave 
-  for(int i=0; i < AUDIO_BUFFER_SIZE; i++){
-    float sample = sinf( 2 * 3.14159f * 1000.0f * ((float)i / 44100.0f) );
-    AUDIO_BUFFER[i] = (int16_t)(sample * 32767.0f * 0.5f); // Scale to 16-bit signed integer range
+  // Generate 1 kHz sine wave.
+  // I2S pairs int16 samples into stereo L+R frames, so output index i feeds frame i/2.
+  // Buffer length is 441 frames (882 int16) = exactly 10 cycles of 1 kHz at 44.1 kHz
+  // -> seamless loop with no pitch snap.
+  float Fs = 44100.0f;                 // frame rate (stereo frames per second)
+  float f  = 1000.0f;                  // desired tone
+  for(int i = 0; i < AUDIO_BUFFER_SIZE; i += 2){
+    float s = sinf( 2.0f * 3.14159f * f * ((float)(i / 2) / Fs) );
+    int16_t sample = (int16_t)(s * 32767.0f * 0.5f);
+    AUDIO_BUFFER[i]     = sample;      // Left
+    AUDIO_BUFFER[i + 1] = sample;      // Right (same -> mono on MAX98357A)
   }
   // Start I2S Circular DMA Playback
   HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t*) AUDIO_BUFFER, AUDIO_BUFFER_SIZE);
@@ -130,6 +140,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
   */
@@ -158,14 +169,25 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
-  HAL_RCC_MCOConfig(RCC_MCO1, RCC_MCO1SOURCE_HSE, RCC_MCODIV_1);
+
+  /** Configure PLLI2S for I2S clock
+  *  PLLI2S: M=25, N=192, R=4 -> (25/25)*192/4 = 48 MHz
+  */
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_I2S;
+  PeriphClkInitStruct.PLLI2S.PLLI2SM = 25;
+  PeriphClkInitStruct.PLLI2S.PLLI2SN = 192;
+  PeriphClkInitStruct.PLLI2S.PLLI2SR = 4;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /** Enables the Clock Security System
   */
@@ -281,22 +303,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA0 PA1 PA4 PA5
-                           PA6 PA7 PA10 PA13
-                           PA14 PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_5
-                          |GPIO_PIN_6|GPIO_PIN_7|GPIO_PIN_10|GPIO_PIN_13
-                          |GPIO_PIN_14|GPIO_PIN_15;
+  /*Configure GPIO pins : PA0 PA1 PA2 PA3
+                           PA4 PA5 PA6 PA7
+                           PA8 PA10 PA13 PA14
+                           PA15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3
+                          |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7
+                          |GPIO_PIN_8|GPIO_PIN_10|GPIO_PIN_13|GPIO_PIN_14
+                          |GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PB0 PB1 PB2 PB13
@@ -308,14 +324,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF0_MCO;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
