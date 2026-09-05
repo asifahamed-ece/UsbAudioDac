@@ -18,10 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-# include <math.h>
+#include "audio_i2s.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,16 +44,11 @@
 I2S_HandleTypeDef hi2s2;
 DMA_HandleTypeDef hdma_spi2_tx;
 
-PCD_HandleTypeDef hpcd_USB_OTG_FS;
-
 /* USER CODE BEGIN PV */
-/* 882 int16 = 441 stereo frames = 10 ms = exactly 10 cycles of 1 kHz at 44.1 kHz
- * I2S pairs samples into L+R frames, so each int16 = half a frame.
- * Buffer MUST contain an integer number of output-frequency cycles for seamless loop. */
-#define AUDIO_BUFFER_SIZE 882
-
-int16_t AUDIO_BUFFER[AUDIO_BUFFER_SIZE] = {0};
-volatile uint32_t currentSampleIndex = 0;
+/* The 1 kHz sine test buffer (AUDIO_BUFFER[882]) and the
+ * Phase 2 sine-generation code are removed. The DMA now runs
+ * on audio_i2s_buffer (in audio_i2s.c), which the I2S callbacks
+ * refill from the USB ring buffer. */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -60,7 +56,6 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_I2S2_Init(void);
-static void MX_USB_OTG_FS_PCD_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -101,24 +96,23 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_I2S2_Init();
-  MX_USB_OTG_FS_PCD_Init();
+
+  /* Start the I2S consumer BEFORE USB enumeration so the
+   * peripheral is already clocking out silence from a zeroed
+   * buffer. When the USB host opens its audio pipe and the
+   * ring starts filling, the I2S callbacks (in stm32f4xx_it.c)
+   * will start pulling samples from the ring into the buffer.
+   *
+   * Order matters: if USB started first, the ring would fill
+   * but nothing would drain it — by the time I2S started, the
+   * ring could be overflowing on a bursty source. */
+  AudioI2S_Init();
+
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
-
-  // Generate 1 kHz sine wave.
-  // I2S pairs int16 samples into stereo L+R frames, so output index i feeds frame i/2.
-  // Buffer length is 441 frames (882 int16) = exactly 10 cycles of 1 kHz at 44.1 kHz
-  // -> seamless loop with no pitch snap.
-  float Fs = 44100.0f;                 // frame rate (stereo frames per second)
-  float f  = 1000.0f;                  // desired tone
-  for(int i = 0; i < AUDIO_BUFFER_SIZE; i += 2){
-    float s = sinf( 2.0f * 3.14159f * f * ((float)(i / 2) / Fs) );
-    int16_t sample = (int16_t)(s * 32767.0f * 0.5f);
-    AUDIO_BUFFER[i]     = sample;      // Left
-    AUDIO_BUFFER[i + 1] = sample;      // Right (same -> mono on MAX98357A)
-  }
-  // Start I2S Circular DMA Playback
-  HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t*) AUDIO_BUFFER, AUDIO_BUFFER_SIZE);
-
+  /* (Phase 2 1 kHz sine generation removed; the I2S DMA now
+   * streams from audio_i2s_buffer, which is refilled from the
+   * USB ring buffer.) */
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -140,7 +134,6 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
   */
@@ -154,10 +147,10 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 15;
-  RCC_OscInitStruct.PLL.PLLN = 144;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
-  RCC_OscInitStruct.PLL.PLLQ = 5;
+  RCC_OscInitStruct.PLL.PLLM = 25;
+  RCC_OscInitStruct.PLL.PLLN = 384;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV8;
+  RCC_OscInitStruct.PLL.PLLQ = 8;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -169,22 +162,10 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure PLLI2S for I2S clock
-  *  PLLI2S: M=25, N=192, R=4 -> (25/25)*192/4 = 48 MHz
-  */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_I2S;
-  PeriphClkInitStruct.PLLI2S.PLLI2SM = 25;
-  PeriphClkInitStruct.PLLI2S.PLLI2SN = 192;
-  PeriphClkInitStruct.PLLI2S.PLLI2SR = 4;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
@@ -225,41 +206,6 @@ static void MX_I2S2_Init(void)
   /* USER CODE BEGIN I2S2_Init 2 */
 
   /* USER CODE END I2S2_Init 2 */
-
-}
-
-/**
-  * @brief USB_OTG_FS Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USB_OTG_FS_PCD_Init(void)
-{
-
-  /* USER CODE BEGIN USB_OTG_FS_Init 0 */
-
-  /* USER CODE END USB_OTG_FS_Init 0 */
-
-  /* USER CODE BEGIN USB_OTG_FS_Init 1 */
-
-  /* USER CODE END USB_OTG_FS_Init 1 */
-  hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
-  hpcd_USB_OTG_FS.Init.dev_endpoints = 4;
-  hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
-  hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
-  hpcd_USB_OTG_FS.Init.Sof_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.lpm_enable = DISABLE;
-  hpcd_USB_OTG_FS.Init.vbus_sensing_enable = ENABLE;
-  hpcd_USB_OTG_FS.Init.use_dedicated_ep1 = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_OTG_FS) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_OTG_FS_Init 2 */
-
-  /* USER CODE END USB_OTG_FS_Init 2 */
 
 }
 
@@ -332,15 +278,9 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s){
-  // DMA Reached Halfway Point - Nothing to do here for Now.
-}
-
-void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s){
-  // DMA Transfer Complete and Wraps back to Start of the Buffer - Nothing to do here in Circular Mode.
-}
-
-
+/* HAL I2S callbacks (HAL_I2S_TxHalfCpltCallback / HAL_I2S_TxCpltCallback)
+ * are implemented in stm32f4xx_it.c — they route to AudioI2S_RefillHalfA/B
+ * which pull samples from the ring buffer. See stm32f4xx_it.c. */
 
 /* USER CODE END 4 */
 

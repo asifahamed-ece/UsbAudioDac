@@ -55,6 +55,7 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
 extern DMA_HandleTypeDef hdma_spi2_tx;
 /* USER CODE BEGIN EV */
 
@@ -213,6 +214,52 @@ void DMA1_Stream4_IRQHandler(void)
   /* USER CODE END DMA1_Stream4_IRQn 1 */
 }
 
+/**
+  * @brief This function handles USB On The Go FS global interrupt.
+  */
+void OTG_FS_IRQHandler(void)
+{
+  /* USER CODE BEGIN OTG_FS_IRQn 0 */
+
+  /* USER CODE END OTG_FS_IRQn 0 */
+  HAL_PCD_IRQHandler(&hpcd_USB_OTG_FS);
+  /* USER CODE BEGIN OTG_FS_IRQn 1 */
+
+  /* USER CODE END OTG_FS_IRQn 1 */
+}
+
 /* USER CODE BEGIN 1 */
+#include "audio_i2s.h"
+#include "usbd_audio_if.h"     /* HalfTransfer_CallBack_FS, TransferComplete_CallBack_FS */
+#include "usbd_audio.h"        /* USBD_AUDIO_Sync, AUDIO_OFFSET_* */
+#include "usb_device.h"        /* hUsbDeviceFS */
+
+/* HAL callback: DMA has consumed the first half of audio_i2s_buffer.
+ *
+ * The order matters here:
+ *   1. Call HalfTransfer_CallBack_FS — this routes to USBD_AUDIO_Sync
+ *      with AUDIO_OFFSET_HALF, which is what flushes the upstream USB
+ *      half-buffer into our ring (via AUDIO_CMD_PLAY -> RingBuffer_Write).
+ *      Without this call, the USB side never pushes data into the ring
+ *      and the consumer (RefillHalfA below) would read an empty ring,
+ *      producing silence.
+ *   2. Then call AudioI2S_RefillHalfA to pull the freshly written
+ *      samples out of the ring and lay them into the I2S DMA buffer.
+ */
+void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+    UNUSED(hi2s);
+    HalfTransfer_CallBack_FS();
+    AudioI2S_RefillHalfA();
+}
+
+/* HAL callback: DMA has consumed the second half. Same contract as
+ * HalfCplt but for the upper half of the buffer. */
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+    UNUSED(hi2s);
+    TransferComplete_CallBack_FS();
+    AudioI2S_RefillHalfB();
+}
 
 /* USER CODE END 1 */
