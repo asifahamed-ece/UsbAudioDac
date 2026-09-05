@@ -87,67 +87,74 @@ The firmware is built in **8 phases**, each with a clean, demonstrable deliverab
 ---
 
 ### **Phase 1 — Clock Tree from Scratch** ✅
-**Goal:** Configure HSE → PLL → 60 MHz SYSCLK, PLLQ → 48 MHz USB, external 12.288 MHz crystal for I2S MCLK
+**Goal:** Configure HSE → PLL → 60 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S clock
 **Peripherals:** RCC, PLL, PWR
 **Time:** Day 2-4
 
 **Tasks Completed:**
-- [x] Read RM0383 Chapter 6 (RCC) — focus on PLL configuration flow
-- [x] Enable HSE (25 MHz external crystal on Black Pill)
-- [x] Configure PLL: PLLM=15, PLLN=144, PLLP=4, PLLQ=5 → 60 MHz SYSCLK, 48 MHz USB clock
+- [x] Read RM0383 Chapter 6 (RCC) — PLL configuration flow
+- [x] Enable HSE (25 MHz external crystal on Black Pill, PH0/PH1)
+- [x] Configure main PLL: PLLM=15, PLLN=144, PLLP=4, PLLQ=5 → 60 MHz SYSCLK + 48 MHz USB
+- [x] Configure PLLI2S: PLLI2SM=25, PLLI2SN=192, PLLI2SR=4 → 48 MHz I2SCLK
 - [x] Verify clock config via CubeMX validation (no red warnings)
-- [x] External 12.288 MHz crystal connected to I2S_CKIN pin (PI0) for I2S audio clock
-- [x] AHB Prescaler = 1 (HCLK = 60 MHz), APB1 Prescaler = 2 (PCLK1 = 30 MHz), APB2 Prescaler = 1 (PCLK2 = 60 MHz)
-- [x] Note: PLLI2S not needed - using external I2S_CKIN for audio clock
+- [x] AHB Prescaler = 1 (HCLK = 60 MHz), APB1 Prescaler = 1, APB2 Prescaler = 1
+- [x] FLASH_LATENCY_1 for 60 MHz @ 2.7-3.6 V
+- [x] **Abandoned external I2S_CKIN plan:** PI0 is not exposed on the F411 CEU6 (UFQFPN48) package. PLLI2S at 48 MHz gives equivalent audio quality without extra hardware.
 
 **Final Configuration:**
 ```
-HSE = 25.000 MHz (external crystal)
+HSE = 25.000 MHz (PH0/PH1 crystal)
 SYSCLK = 60.000 MHz (PLL: M=15, N=144, P=4)
 USBCLK = 48.000 MHz (PLLQ=5)
-I2S MCLK = 12.288 MHz (external crystal via I2S_CKIN pin)
+I2SCLK = 48.000 MHz (PLLI2S: M=25, N=192, R=4)
 CSS Enabled for clock fault detection
+FLASH_LATENCY_1
 ```
 
-**Deliverable:** Clock tree configured with exact frequencies. System ready for Phase 2 (I2S + DMA).
+**Deliverable:** Clock tree configured with exact frequencies. System ready for Phase 2.
 
 ---
 
-### **Phase 2 — I2S + DMA Audio Output (1 kHz Tone)** 🔄
+### **Phase 2 — I2S + DMA Audio Output (1 kHz Tone)** ✅
 **Goal:** Generate a 1 kHz sine wave and hear it on the speaker
-**Peripherals:** I2S2, DMA1, GPIO (alt function)
+**Peripherals:** I2S2, DMA1, GPIO (alt function 5)
 **Time:** Day 4-7
 
-**Configuration completed in CubeMX:**
-- ✅ I2S2: Half-Duplex Master, Philips standard, 16-bit data on 32-bit frame
-- ✅ Audio Frequency: 48 kHz (Real: 46.75 kHz, -2.34% error from PLLI2S)
-- ✅ Clock Source: I2S2 PLL Clock (PLLI2S at 48 MHz)
-- ✅ Master Clock Output: Enabled (12.288 MHz external crystal via PI0/I2S_CKIN)
-- ✅ Audio Clock Input (I2S_CKIN): Enabled in RCC
-- ✅ DMA1 Stream 4 configured for I2S2_TX (Circular mode, Word peripheral, HalfWord memory)
-- ✅ DMA1 Stream 4 interrupt enabled in NVIC
-- ✅ SPI2 global interrupt: DISABLED (not needed for DMA circular mode)
-- ✅ Clock Polarity: LOW (I2S Philips standard - cannot be changed)
+**Final working configuration (CubeMX `.ioc` + `main.c`):**
+- ✅ I2S2: Master TX, Philips standard, **16-bit data, 32-bit frame**, MCLK disabled
+- ✅ Audio Frequency: `I2S_AUDIOFREQ_44K` (real ≈ 44.117 kHz, +0.04% error)
+- ✅ Clock Source: `I2S_CLOCK_PLL` (PLLI2S=48 MHz)
+- ✅ CPOL = LOW (Philips standard)
+- ✅ DMA1 Stream 4 / Channel 0 for I2S2_TX, Circular mode, FIFO FULL, HALFWORD, priority HIGH
+- ✅ DMA1_Stream4 IRQ enabled at priority 0,0
+- ✅ `HAL_I2S_MspInit` does NOT re-init PLLI2S (kept the `SystemClock_Config` value)
+- ✅ Correct pin map: **PB10=CK, PB12=WS, PB15=SD** (AF5). Earlier plan had SCK→PB13 — wrong; PB13 is not I2S2 CK on F411.
+- ✅ 882-int16 buffer (441 stereo frames = 10 ms = exactly 10 cycles of 1 kHz)
+- ✅ Sine generation emits L,R pairs (stereo frames), mono on MAX98357A
 
 **Tasks:**
 - [x] Configure I2S2 + DMA1 in CubeMX
-- [x] DMA1 Stream 4 (not Stream 3) for I2S2_TX on STM32F411
-- [x] Enable DMA interrupt for buffer refill
-- [ ] Generate code from CubeMX
-- [ ] Verify generated code (dma.c, i2s.c, main.c)
-- [ ] Wire I2S2 → MAX98357A → Speaker (SCK→PB13, WS→PB12, SD→PB15, MCLK→external 12.288 MHz)
-- [ ] Add sine wave generation code (1 kHz test tone)
-- [ ] Flash and test audio output
-- [ ] Hear 1 kHz tone
+- [x] Generate code from CubeMX → `USB_Audio_DAC_1.0/`
+- [x] Wire I2S2 → MAX98357A → Speaker (PB10/PB12/PB15)
+- [x] Add 1 kHz sine generation in main.c
+- [x] Flash via `st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000`
+- [x] Verify audio with online frequency meter → **1000 Hz confirmed** ✅
 
-**Key learning points:**
-- I2S2 uses DMA1 Stream 4 (not Stream 3) for TX on STM32F411
-- I2S Philips standard requires Clock Polarity = LOW
-- Circular DMA mode enables continuous audio playback without CPU intervention
-- External 12.288 MHz crystal via I2S_CKIN provides MCLK for audio quality
-- PLLI2S provides I2S peripheral's internal logic clock (48 MHz)
+**Key learning points — the "344 Hz then 100 Hz" debugging story:**
 
-**Deliverable:** Audible 1 kHz tone from speaker using external 12.288 MHz I2S clock
+1. First build with 256-int16 buffer + 1 kHz tone → output measured 344 Hz.
+2. Root cause: I2S pairs int16 into L+R frames. 256 int16 = 128 frames = 2.9 ms of audio. 2.9 ms × 1 kHz = 2.9 cycles, then DMA loops back to sample 0 → phase snap → loop period 2.9 ms = 344 Hz.
+3. Fix: size buffer to contain an integer number of cycles. 44100 / 1000 = 44.1 frames per cycle, smallest integer multiple = 441 frames = 882 int16 = 10 ms = 10 cycles. Output: clean 1 kHz. ✅
+4. Trying f=440 Hz and f=880 Hz with the same 882 buffer: 10 ms = 4.4 cycles / 8.8 cycles → 100 Hz buzz. **General rule:** `(buffer_frames / Fs) × f` must be an integer; smallest valid buffer for any `f` is `44100 / gcd(f, 44100)` frames.
+5. Why music won't have this problem: real audio is streamed continuously into the DMA buffer (USB ISR fills the half just played). The buffer is never looped → no snap. The "integer-cycles" rule is a test-tone-only constraint.
+
+**I2S divider math (for future debugging):**
+- HAL formula: `i2sdiv = ROUND(i2sclk / (packetlength × AudioFreq))`
+- For Philips 16-bit data: packetlength = 32 (16 bits × 2 channels), not 16
+- With I2SCLK=48 MHz, AudioFreq=44.1 kHz: `i2sdiv = ROUND(48e6 / (32 × 44100)) = 17` → BCLK = 48e6/17/2 = 1.412 MHz
+- If you ever see BCLK = 3 MHz instead of 1.4 MHz, the I2S peripheral is treating the frame as 64 bits (16B_EXTENDED), not 32 — check `I2S_Init.DataFormat`
+
+**Deliverable:** Audible, verified 1 kHz tone on speaker. Phase 2 complete.
 
 ---
 
@@ -314,11 +321,11 @@ Core/
 ## 8. Verification Checklist
 
 - [x] Phase 0: LED blinks, "Hello World" prints on serial ✅
-- [x] Phase 1: Clock tree configured (HSE=25MHz, SYSCLK=60MHz, USBCLK=48MHz, I2SCLK=12.288MHz external) ✅
-- [ ] Phase 2: 1 kHz tone audible from speaker (in progress - DMA1 Stream 4 configured)
+- [x] Phase 1: Clock tree configured (HSE=25MHz, SYSCLK=60MHz, USBCLK=48MHz, I2SCLK=48MHz from PLLI2S) ✅
+- [x] Phase 2: **1 kHz tone verified on online frequency meter** ✅
 - [ ] Phase 3: PC shows "USB Audio Device" in Sound settings, music plays
 - [ ] Phase 4: Encoder rotates → volume changes, press → mute
-- [ ] Phase 5: OLED shows live volume and audio level
+- [ ] Phase 5: TFT shows live volume and audio level
 - [ ] Phase 6: 30-min stress test passes with all RTOS tasks running
 - [ ] Phase 7: README complete, code documented
 
@@ -339,7 +346,7 @@ Core/
 
 By completion, you will have hands-on experience with:
 - ARM Cortex-M4 architecture (NVIC, FPU, SysTick)
-- Clock tree design (HSE → PLL → 60 MHz, PLLQ → 48 MHz USB, external 12.288 MHz I2S)
+- Clock tree design (HSE → PLL → 60 MHz, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S)
 - Digital audio protocols (I2S, BCLK/LRCLK framing)
 - DMA controller (circular buffers, double-buffering)
 - USB 2.0 Full-Speed device (descriptors, endpoints, audio class)
