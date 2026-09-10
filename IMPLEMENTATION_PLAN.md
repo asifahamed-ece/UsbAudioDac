@@ -370,12 +370,31 @@ Core/
 
 **No logic analyzer or oscilloscope required** — clock and signal verification done via serial debug output and audio listening tests.
 
+### Build & Flash Commands
+
+The CubeMX-generated project lives in `USB_Audio_DAC_1.0/`. Build and flash from that directory.
+
+**Toolchain:** `arm-none-eabi-gcc` (Arch Repository, version 16.2.0)
+**Flash tools:** `st-flash` (ST-Link V2) and `openocd` are available
+
+```bash
+cd USB_Audio_DAC_1.0
+make                    # Full build
+make V=1                # Verbose build
+make clean              # Clean build artifacts
+st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000   # Flash
+st-flash erase 0x08000000 512K                           # Erase
+st-flash reset                                           # Reset
+```
+
+> The active project is the CubeMX-generated `USB_Audio_DAC_1.0/` (not a hand-rolled register-level project). It uses ST's HAL drivers and a CubeMX-generated Makefile.
+
 ---
 
 ## 8. Verification Checklist
 
 - [x] Phase 0: LED blinks, "Hello World" prints on serial ✅
-- [x] Phase 1: Clock tree configured (HSE=25 MHz, SYSCLK=48 MHz, USBCLK=48 MHz, I2SCLK=48 MHz from PLLI2S) ✅
+- [x] Phase 1: Clock tree configured (HSE=25 MHz, SYSCLK=48 MHz, USBCLK=48 MHz, I2SCLK=96 MHz from PLLI2S) ✅
 - [x] Phase 2: **1 kHz tone verified on online frequency meter** ✅
 - [x] Phase 3: **PC plays audio through MAX98357A** — `lsusb` shows Audio class, `speaker-test -f 1000/2000/3000/4000` all audible, `aplay` on WAV works. See Phase 3 section for the three-bug story. ✅
 - [ ] Phase 4: Encoder rotates → volume changes, press → mute
@@ -400,7 +419,7 @@ Core/
 
 By completion, you will have hands-on experience with:
 - ARM Cortex-M4 architecture (NVIC, FPU, SysTick)
-- Clock tree design (HSE → PLL → 48 MHz, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S)
+- Clock tree design (HSE → PLL → 48 MHz, PLLQ → 48 MHz USB, PLLI2S → 96 MHz I2S)
 - Digital audio protocols (I2S, BCLK/LRCLK framing)
 - DMA controller (circular buffers, double-buffering)
 - USB 2.0 Full-Speed device (descriptors, endpoints, audio class)
