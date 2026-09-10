@@ -44,7 +44,7 @@ STM32F411 USB Audio Player — block-by-block learning log.
 HSE = 25.000 MHz (external crystal on PH0/PH1)
 SYSCLK = 48.000 MHz (PLL: M=25, N=384, P=DIV8)
 USBCLK = 48.000 MHz (PLLQ=8)
-I2SCLK = 48.000 MHz (PLLI2S: M=25, N=192, R=4) → drives I2S2 peripheral
+I2SCLK = 96.000 MHz (PLLI2S: M=25, N=192, R=2) → drives I2S2 peripheral
 CSS Enabled for clock fault detection
 AHB=1, APB1=DIV2, APB2=1
 FLASH_LATENCY_1
@@ -62,7 +62,7 @@ FLASH_LATENCY_1
 - `SYSCLK = VCO / PLLP = 384/8 = 48 MHz`
 - `USBCLK = VCO / PLLQ = 384/8 = 48 MHz`
 - PLLI2S: `VCO_I2S = (HSE/PLLI2SM) × PLLI2SN = (25/25) × 192 = 192 MHz`
-- `I2SCLK = VCO_I2S / PLLI2SR = 192/4 = 48 MHz`
+- `I2SCLK = VCO_I2S / PLLI2SR = 192/2 = 96 MHz`
 
 **Note on earlier external-MCLK plan:** the F411 CEU6 package (UFQFPN48) does not expose PI0/I2S_CKIN, so the external 12.288 MHz crystal approach was abandoned. PLLI2S at 48 MHz gives the audio quality we need without the extra hardware.
 
@@ -92,7 +92,7 @@ FLASH_LATENCY_1
 - ✅ I2S2 Clock Source: I2S_CLOCK_PLL (PLLI2S at 48 MHz)
 - ✅ DMA1 Stream 4 for I2S2_TX (DMA channel 0), Circular mode, FIFO enabled, HALFWORD both sides
 - ✅ DMA1_Stream4 IRQ priority 0,0 (NVIC enabled)
-- ✅ HAL_I2S_MspInit does NOT touch PLLI2S (lets `SystemClock_Config` set it once)
+- ✅ HAL_I2S_MspInit is the sole PLLI2S config site (PLLI2SN=192, PLLI2SM=25, PLLI2SR=2) — SystemClock_Config does NOT touch PLLI2S
 - ✅ MAX98357A wired: BCLK←PB10, LRCK/WS←PB12, SD←PB15; SD pin has L/R channel-select strap (see BOM.md)
 
 **Pin note:** `PB13` is not the I2S2 CK pin on the F411 — the alternate-function 5 mapping is **PB10=CK, PB12=WS, PB15=SD**. Earlier plan had `SCK→PB13`; that is wrong for I2S2 and was corrected.
@@ -100,7 +100,7 @@ FLASH_LATENCY_1
 **Tasks:**
 - [x] Configure I2S2 + DMA1 in CubeMX
 - [x] Verify pin map (PB10/PB12/PB15, not PB13)
-- [x] Remove duplicate PLLI2S init from `HAL_I2S_MspInit` (was overwriting main.c's config)
+- [x] PLLI2S is configured in `HAL_I2S_MspInit` (PLLI2SN=192, PLLI2SM=25, PLLI2SR=2 → 96 MHz I2SCLK)
 - [x] Use `RCC_PERIPHCLK_I2S` (not `_APB1`/`_APB2` — those are F412/F413/F446 only)
 - [x] Wire I2S2 → MAX98357A → Speaker
 - [x] Generate 1 kHz sine in 882-int16 buffer
@@ -122,7 +122,7 @@ FLASH_LATENCY_1
 - I2S Philips standard + 16-bit data → frame is 32 bits; HAL divider formula `i2sdiv=(i2sclk/AudioFreq/packetlength)` must be matched
 - Circular DMA mode replays the buffer forever; if you use one, the buffer must encode an integer number of output cycles
 - `RCC_PERIPHCLK_I2S` is the correct define for F411; `_APB1`/`_APB2` are for F412/F413/F446
-- Don't re-init PLLI2S inside `HAL_I2S_MspInit` if you already set it in `SystemClock_Config` — the HAL will overwrite your values
+- PLLI2S is configured in `HAL_I2S_MspInit`, not in `SystemClock_Config` — the main PLL and PLLI2S are independent
 
 **Deliverable:** 1 kHz sine tone audible on speaker, verified with online frequency meter. Phase 2 complete.
 
