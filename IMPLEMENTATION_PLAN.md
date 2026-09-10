@@ -50,13 +50,13 @@ STM32F411 Black Pill
     ├── USB OTG FS  ─── receives audio packets (44.1 kHz mono)
     ├── I2S2        ─── outputs PCM to MAX98357A (44.117 kHz)
     ├── DMA1        ─── moves PCM samples to I2S
-    ├── I2C1        ─── drives SSD1306 OLED
+    ├── SPI1 (PA5/PA7)      → drives ST7735S TFT display
     ├── TIM4 (encoder mode) ─── reads rotary encoder
     ├── DAC1        ─── PAM8403 hardware volume control
     └── USART2      ─── debug output
     │
     ├──▶ MAX98357A → Speaker
-    ├──▶ SSD1306 OLED (visualizer / volume)
+    ├──▶ ST7735S TFT (visualizer / volume)
     └──▶ Rotary Encoder (volume + mute)
 ```
 
@@ -95,11 +95,11 @@ The firmware is built in **8 phases**, each with a clean, demonstrable deliverab
 - [x] Read RM0383 Chapter 6 (RCC) — PLL configuration flow
 - [x] Enable HSE (25 MHz external crystal on Black Pill, PH0/PH1)
 - [x] Configure main PLL: PLLM=25, PLLN=384, PLLP=DIV8, PLLQ=8 → 48 MHz SYSCLK + 48 MHz USB
-- [x] Configure PLLI2S: PLLI2SM=25, PLLI2SN=192, PLLI2SR=4 → 48 MHz I2SCLK
+- [x] Configure PLLI2S: PLLI2SM=25, PLLI2SN=192, PLLI2SR=2 → 96 MHz I2SCLK
 - [x] Verify clock config via CubeMX validation (no red warnings)
 - [x] AHB Prescaler = 1 (HCLK = 48 MHz), APB1 Prescaler = 2, APB2 Prescaler = 1
 - [x] FLASH_LATENCY_1 for 48 MHz @ 2.7-3.6 V
-- [x] **Abandoned external I2S_CKIN plan:** PI0 is not exposed on the F411 CEU6 (UFQFPN48) package. PLLI2S at 48 MHz gives equivalent audio quality without extra hardware.
+- [x] **Abandoned external I2S_CKIN plan:** PI0 is not exposed on the F411 CEU6 (UFQFPN48) package. PLLI2S at 96 MHz gives equivalent audio quality without extra hardware.
 - [x] **Simplified from an earlier 60 MHz SYSCLK plan** (`M=15, N=144, P=4`) to 48 MHz so the whole system runs at a single frequency. Less to debug, same headroom for USB + I2S + later RTOS tasks.
 
 **Final Configuration:**
@@ -107,7 +107,7 @@ The firmware is built in **8 phases**, each with a clean, demonstrable deliverab
 HSE = 25.000 MHz (PH0/PH1 crystal)
 SYSCLK = 48.000 MHz (PLL: M=25, N=384, P=DIV8)
 USBCLK = 48.000 MHz (PLLQ=8)
-I2SCLK = 48.000 MHz (PLLI2S: M=25, N=192, R=4)
+I2SCLK = 96.000 MHz (PLLI2S: M=25, N=192, R=2)
 CSS Enabled for clock fault detection
 FLASH_LATENCY_1
 ```
@@ -128,7 +128,7 @@ FLASH_LATENCY_1
 - ✅ CPOL = LOW (Philips standard)
 - ✅ DMA1 Stream 4 / Channel 0 for I2S2_TX, Circular mode, FIFO FULL, HALFWORD, priority HIGH
 - ✅ DMA1_Stream4 IRQ enabled at priority 0,0
-- ✅ `HAL_I2S_MspInit` does NOT re-init PLLI2S (kept the `SystemClock_Config` value)
+- ✅ `HAL_I2S_MspInit` is the sole PLLI2S config site (PLLI2SN=192, PLLI2SM=25, PLLI2SR=2 → 96 MHz) — `SystemClock_Config` does NOT touch PLLI2S
 - ✅ Correct pin map: **PB10=CK, PB12=WS, PB15=SD** (AF5). Earlier plan had SCK→PB13 — wrong; PB13 is not I2S2 CK on F411.
 - ✅ 882-int16 buffer (441 stereo frames = 10 ms = exactly 10 cycles of 1 kHz)
 - ✅ Sine generation emits L,R pairs (stereo frames), mono on MAX98357A
@@ -209,7 +209,7 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 **Key descriptor bytes (so the next reader knows what to expect):**
 - `bNrChannels = 1`, `bSubSlotSize = 2`, `bBitResolution = 16`, `tSamFreq = 0x00AC44` (44100)
 - `wMaxPacketSize = 88`, `bInterval = 1`
-- `bmAttributes = 0x01` (Async) — implicit feedback, PC is clock master
+- `bmAttributes = 0x00` (Sync) — PC is clock master
 - `bSynchAddress = 0` — no explicit feedback endpoint
 
 **What you'll have learned by the end of Phase 3:**
