@@ -107,7 +107,7 @@ USB_Audio_DAC_1.0/
 ```
 PC (USB audio source)
     │
-    │  USB Full-Speed (12 Mbps, 48 kHz 16-bit mono)
+    │  USB Full-Speed (12 Mbps, 44.1 kHz 16-bit mono)
     ▼
 STM32F411 Black Pill
     ├── USB OTG FS          → receives audio packets
@@ -127,7 +127,7 @@ STM32F411 Black Pill
 | Peripheral | Pins | Notes |
 |-----------|------|-------|
 | USB DM/DP | PA11/PA12 | USB OTG FS Device |
-| I2S2 WS/CK/SD | PB12/PB13/PB15 | I2S2 alt func 5 |
+| I2S2 WS/CK/SD | PB12/PB10/PB15 | I2S2 alt func 5 |
 | SPI1 SCK/MOSI | PA5/PA7 | ST7735S display |
 | Display CS/DC/RST/LED | PB0/PA0/PA1/PA2 | ST7735S control |
 | Encoder A/B | PB6/PB7 | TIM4 encoder mode |
@@ -146,17 +146,16 @@ STM32F411 Black Pill
 - **HSE:** 25 MHz crystal on PH0/PH1
 - **SYSCLK:** 48 MHz (PLL: PLLM=25, PLLN=384, PLLP=DIV8 → 25/25×384/8=48 MHz)
 - **USB clock:** 48 MHz (PLLQ=8 → exact for Full-Speed USB)
-- **I2S clock:** 48 MHz from PLLI2S (PLLM=25, PLLN=384) — drives I2S2 via `I2S_CLOCK_PLL`
+- **I2S clock:** 96 MHz from PLLI2S (PLLI2SM=25, PLLI2SN=192, PLLI2SR=2) — drives I2S2 via `I2S_CLOCK_PLL`
 - **AHB / APB1 / APB2:** 48 MHz / 24 MHz (DIV2) / 48 MHz (DIV1)
 - **FLASH_LATENCY:** 1 WS (for 48 MHz at 2.7–3.6 V)
-- **FLASH_LATENCY:** 1 WS for 60 MHz at 2.7-3.6 V
-- **Note:** the early "100 MHz SYSCLK + 12.288 MHz external MCLK" plan was dropped because (a) PI0/I2S_CKIN is not exposed on the F411 CEU6 UFQFPN48, and (b) PLLI2S at 48 MHz gives the audio quality we need
+- **Note:** the early "100 MHz SYSCLK + 12.288 MHz external MCLK" plan was dropped because (a) PI0/I2S_CKIN is not exposed on the F411 CEU6 UFQFPN48, and (b) PLLI2S at 96 MHz gives the audio quality we need
 
 ---
 
 ## Notes
 
 - The active project is the CubeMX-generated `USB_Audio_DAC_1.0/` (not a hand-rolled register-level project). It uses ST's HAL drivers and a CubeMX-generated Makefile.
-- Currently mid-Phase 2: I2S2 + DMA1 plays a 1 kHz sine through MAX98357A. Phase 3 (USB Audio Class 1.0) is the next step.
+- Currently mid-Phase 3: USB Audio Class 1.0 is working — PC plays audio through MAX98357A. Phase 4 (rotary encoder volume) is the next step.
 - See `PROGRESS.md` for the phase-by-phase working log, including the 344 Hz → 1 kHz debugging story.
 - See `IMPLEMENTATION_PLAN.md` for the full 8-phase plan with task breakdowns and RM0383 chapter references.
