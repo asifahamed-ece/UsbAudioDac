@@ -184,6 +184,44 @@ All three bugs caused the device to **enumerate correctly but play no audio**. `
 
 ---
 
+## Phase 3.5 — Reliability & Test Infrastructure ✅ (2026-09-17)
+
+| Status | Task |
+|--------|------|
+| ✅ | Linker: CCMRAM region/section + stack bump |
+| ✅ | Host-simulated ring-buffer unit tests (ASan-clean) |
+| ✅ | Independent watchdog (IWDG) supervision |
+| ✅ | Makefile convenience targets: `make flash / test / size` |
+
+**Why:** before touching the Phase 4-6 feature stack (encoder, TFT, FreeRTOS),
+the firmware needs (a) RAM headroom, (b) a regression net around the only
+lock-free data structure in the build, and (c) a dead-device watchdog.
+
+**Changes:**
+- `STM32F411xx_FLASH.ld` — declared the 64 KB CCMRAM region (0x10000000), added
+  a `.ccmram` (NOLOAD) output section for CPU-only data, bumped `_Min_Stack_Size`
+  0x800 → 0x1000. Audio/DMA buffers must stay in main RAM (CCMRAM is CPU-only).
+- `tests/` — new host-simulated suite for the USB→I2S SPSC ring buffer
+  (8 tests, 5227 assertions): empty/full invariants, power-of-2 wraparound,
+  partial ops, reset, 5000-iteration producer/consumer churn, and a
+  global-stream integrity check across 200 full-ring wraps. `ring_buffer.c`
+  compiles unmodified on the host. ASan/UBSan-clean. `make -C tests run`.
+- `main.c` (all inside USER CODE) + `stm32f4xx_hal_conf.h` + Makefile — enabled
+  `HAL_IWDG_MODULE_ENABLED`, linked `stm32f4xx_hal_iwdg.c`, started the
+  windowless IWDG (~1 s, LSI/64, reload 500), refreshed every main-loop pass. A
+  stuck main loop now ends in a reset, not a dead device.
+- `Makefile` — `make flash` (st-flash), `make test`, `make size`.
+
+**Debugging note:** the first three test runs "failed" — every time it was the
+*test oracle*, not the ring: (1) a full-ring write sourced from a 256-byte array
+(OOB read), (2) a read request sized above the destination buffer (OOB write),
+(3) a stream oracle that restarted its pattern per write instead of treating the
+samples as one contiguous stream. Fixed the oracles; the ring implementation was
+never implicated. This is why host tests are worth having — they catch caller
+contract violations cheaply, long before the ISA side would.
+
+---
+
 ## Phase 4 — Rotary Encoder Volume Control
 
 | Status | Task |
@@ -228,8 +266,8 @@ All three bugs caused the device to **enumerate correctly but play no audio**. `
 
 | Status | Item | Notes |
 |--------|------|-------|
-| ⏳ | Add `.ccmram` section to `STM32F411xx_FLASH.ld` | Reviewer flagged that the 64 KB CCMRAM at 0x10000000 is currently undeclared. No code needs it yet, but once added it should NOT be used for audio/DMA buffers (CCMRAM is CPU-only). Add when we need fast CPU scratch (e.g., spectrum-analyzer FFT in Phase 5). |
-| ⏳ | Bump stack 0x800 → 0x1000 | Currently fits USB + I2S callbacks. Needs the extra 2 KB once `printf` is added (Phase 4 debug logs or FreeRTOS in Phase 6). |
+| ✅ 2026-09-17 | Add `.ccmram` section to `STM32F411xx_FLASH.ld` | Done — reviewer flagged that the 64 KB CCMRAM at 0x10000000 was undeclared. Now declared via `.ccmram` (NOLOAD). Still NOT to be used for audio/DMA buffers (CCMRAM is CPU-only). Ready for the Phase 5 FFT scratch. |
+| ✅ 2026-09-17 | Bump stack 0x800 → 0x1000 | Done — makes room for `printf` (Phase 4 debug logs) and FreeRTOS (Phase 6). |
 | ⏳ | Wire `AUDIO_VolumeCtl_FS` | Currently a no-op. Phase 4 connects the rotary encoder to this hook. |
 | ⏳ | 10-min playback stress test | Phase 3 acceptance test deferred. `speaker-test` for a few seconds and a short `aplay` were verified; need a long-duration run (no dropouts, no ring over/underruns, USB stays enumerated) before declaring Phase 3 production-ready. |
 

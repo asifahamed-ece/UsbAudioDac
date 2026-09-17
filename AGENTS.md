@@ -4,18 +4,27 @@
 
 Embedded firmware for STM32F411CEU6 Black Pill USB Audio Class 1.0 device. Audio flows: PC → USB OTG FS → ring buffer → I2S2 + DMA → MAX98357A DAC → speaker.
 
-**Status:** Phases 0–3 complete (toolchain, clocks, I2S+DMA, USB audio). Phases 4–7 planned (encoder volume, TFT visualizer, FreeRTOS, polish).
+**Status:** Phases 0–3, 3.5 complete (toolchain, clocks, I2S+DMA, USB audio, reliability/tests/watchdog). Phases 4–7 planned (encoder volume, TFT visualizer, FreeRTOS, polish).
 
-## Build & Flash
+## Build, Test & Flash
 
 ```bash
 cd USB_Audio_DAC_1.0
 make                    # Build (arm-none-eabi-gcc)
-st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000   # Flash
+make test               # Host-simulated ring-buffer unit tests (host gcc, no ARM toolchain)
+make size               # Per-section memory usage
+make flash              # st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000
+st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000   # (same as make flash)
 make clean              # Clean
 ```
 
-**Toolchain:** `arm-none-eabi-gcc` v16.2.0, `st-flash` (ST-Link V2), `make`.
+**Toolchain:** `arm-none-eabi-gcc` v16.2.0, `st-flash` (ST-Link V2), `make`. Host tests need only `gcc`.
+
+## Watchdog (IWDG)
+
+- Enabled in `Core/Inc/stm32f4xx_hal_conf.h` (`HAL_IWDG_MODULE_ENABLED`).
+- Started in `main.c` USER CODE 2 (~1 s window: LSI/64 = 500 Hz, reload 500); refreshed in the main loop (USER CODE 3).
+- Resets the MCU if the **main loop** stalls. NB: it does not watch per-peripheral hangs (e.g., DMA) — audio silence with a live main loop still won't reset.
 
 ## Critical Debugging Gotchas
 
@@ -91,7 +100,10 @@ aplay -D plughw:2,0 your_audio.wav
 
 ## Deferred Items
 
-- Add `.ccmram` section to linker script (64 KB CCMRAM at 0x10000000, CPU-only)
-- Bump stack from 0x800 to 0x1000 (needed for printf/FreeRTOS)
 - Wire `AUDIO_VolumeCtl_FS` (currently no-op, Phase 4)
 - 10-min playback stress test (Phase 3 acceptance)
+
+## Done (removed from Deferred, 2026-09-17)
+
+- `.ccmram` section added to linker script (64 KB CCMRAM at 0x10000000, CPU-only)
+- Stack bumped 0x800 → 0x1000 (printf/FreeRTOS headroom)

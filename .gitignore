@@ -18,3 +18,4 @@ Firmware/
 .claude/
 Scratchpad.txt
 .opencode/
+USB_Audio_DAC_1.0/tests/test_ring_buffer
