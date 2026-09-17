@@ -49,6 +49,10 @@ DMA_HandleTypeDef hdma_spi2_tx;
  * Phase 2 sine-generation code are removed. The DMA now runs
  * on audio_i2s_buffer (in audio_i2s.c), which the I2S callbacks
  * refill from the USB ring buffer. */
+
+/* Independent watchdog (~1 s window, refreshed every main-loop pass).
+ * Declared static; instance is the shared IWDG peripheral. */
+IWDG_HandleTypeDef hiwdg;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -113,12 +117,24 @@ int main(void)
   /* (Phase 2 1 kHz sine generation removed; the I2S DMA now
    * streams from audio_i2s_buffer, which is refilled from the
    * USB ring buffer.) */
+
+  /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
+   * reload 500  ->  ~1.0 s timeout. Refresh happens in the main
+   * loop; a hang ends in an IWDG reset instead of a dead device. */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
+  hiwdg.Init.Reload = 500;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    HAL_IWDG_Refresh(&hiwdg);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
