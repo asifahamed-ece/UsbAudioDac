@@ -209,7 +209,24 @@ $(BUILD_DIR):
 #######################################
 clean:
 	-rm -fR $(BUILD_DIR)
-  
+
+#######################################
+# convenience targets
+#######################################
+.PHONY: all clean flash test size
+
+# Flash the built binary via ST-Link (needs st-flash on PATH).
+flash: $(BUILD_DIR)/$(TARGET).bin
+	st-flash write $< 0x08000000
+
+# Run host-simulated unit tests (tests/ dir, host gcc).
+test:
+	$(MAKE) -C tests run
+
+# Print per-section memory usage.
+size: $(BUILD_DIR)/$(TARGET).elf
+	$(SZ) $<
+
 #######################################
 # dependencies
 #######################################
