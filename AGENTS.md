@@ -34,23 +34,9 @@ These caused silent failures (device enumerates but no audio):
 2. **Sample rate mismatch** — `USBD_AUDIO_FREQ` in `usbd_conf.h` must equal the `.ioc` value (44100). Hardcoded 48000U causes ring over/underrun → silence.
 3. **Missing `USBD_AUDIO_Sync` call** — ST library exports this but never calls it. Must invoke from I2S DMA callbacks in `Core/Src/stm32f4xx_it.c`. Order: (1) `HalfTransfer_CallBack_FS()`/`TransferComplete_CallBack_FS()`, then (2) `AudioI2S_RefillHalfA/B()`.
 
-## I2S Pin Mapping (F411 specific)
+## I2S Pins & Clocks
 
-| Function | Pin | AF |
-|----------|-----|-----|
-| I2S2 CK  | PB10 | AF5 |
-| I2S2 WS  | PB12 | AF5 |
-| I2S2 SD  | PB15 | AF5 |
-
-**Not PB13** — common mistake from other STM32 families.
-
-## Clock Configuration
-
-- HSE = 25 MHz (external crystal)
-- SYSCLK = 48 MHz (PLL: M=25, N=384, P=DIV8)
-- USBCLK = 48 MHz (PLLQ=8)
-- I2SCLK = 96 MHz (PLLI2S: M=25, N=192, R=2) — configured in `HAL_I2S_MspInit`, NOT `SystemClock_Config`
-- Real I2S rate: 44.117 kHz (+0.04% error)
+Pin mappings (I2S2: **PB10=CK, PB12=WS, PB15=SD**, AF5 — not PB13) and the full clock tree (HSE 25 MHz → 48 MHz SYSCLK/USB, PLLI2S 96 MHz → real I2S rate 44.117 kHz) are single-sourced in **README.md → Wiring / Clock Configuration**.
 
 ## CubeMX Code Generation
 
@@ -93,9 +79,9 @@ aplay -D plughw:2,0 your_audio.wav
 
 ## Reference Documents
 
+- `README.md` — Overview, hardware/BOM/wiring, build & verify, status
 - `IMPLEMENTATION_PLAN.md` — Full 8-phase plan with task breakdowns
-- `PROGRESS.md` — Phase-by-phase working log + debugging stories
-- `BOM.md` — Bill of materials + pinout reference
+- `PROGRESS.md` — Phase-by-phase working log + changelog + debugging stories
 - `STM32F411CEU6/` — Datasheet and reference manual PDFs
 
 ## Deferred Items
