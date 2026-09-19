@@ -8,13 +8,13 @@
 
 ## Project Idea (One-liner)
 
-A self-built USB speaker: receive digital audio from a PC over USB, decode it to analog, amplify it, and play it through a speaker — with a live audio visualizer on an OLED display.
+A self-built USB speaker: receive digital audio from a PC over USB, decode it to analog, amplify it, and play it through a speaker — with a live audio visualizer on a TFT display.
 
 ---
 
 ## 1. Project Overview
 
-The STM32F411CEU6 Black Pill enumerates as a USB Audio Class 1.0 device. When connected to a PC, it appears as a standard USB speaker. Audio data received over USB is played through the MAX98357A I2S DAC + Class D amplifier, driving a small 4Ω mono speaker. A rotary encoder controls volume, and an SSD1306 OLED displays audio level / track information.
+The STM32F411CEU6 Black Pill enumerates as a USB Audio Class 1.0 device. When connected to a PC, it appears as a standard USB speaker. Audio data received over USB is played through the MAX98357A I2S DAC + Class D amplifier, driving a small 8 Ω mono speaker. A rotary encoder controls volume, and an ST7735S TFT displays audio level / track information.
 
 **Target board:** STM32F411CEU6 Black Pill (Cortex-M4, 100 MHz, 128 KB RAM, single-precision FPU)
 **Target firmware:** FreeRTOS-based, with HAL peripherals and register-level clock configuration
@@ -23,19 +23,21 @@ The STM32F411CEU6 Black Pill enumerates as a USB Audio Class 1.0 device. When co
 
 ## 2. Hardware Bill of Materials
 
-| Item | Source | Cost |
-|------|--------|------|
-| STM32F411CEU6 Black Pill | Already have | $0 |
-| MAX98357A I2S DAC + amp module | Already have | $0 |
-| PAM8403 amp module | Already have | $0 |
-| 4Ω small speaker (mono) | Already have | $0 |
-| SSD1306 0.96" OLED (I2C) | Need to buy | ~$2 |
-| Rotary encoder with push button | Need to buy | ~$1 |
-| ST-Link V2 programmer | Need to buy | ~$2-3 |
-| USB-C cable | Already have or buy | ~$1 |
-| Jumper wires, perfboard | Already have or buy | ~$1-2 |
+See **README.md → Hardware / Bill of Materials** for the full, up-to-date component list with ownership status, wiring, and the ST7735S pinout.
 
-**Total extra cost:** ~$5-7
+**Short version — what's needed for the remaining phases:**
+
+| Item | Status |
+|------|--------|
+| STM32F411CEU6 Black Pill | Already have |
+| MAX98357A I2S DAC + amp module | Already have (the *only* amp the design needs) |
+| 8 Ω speaker (mono) | Already have |
+| ST7735S 1.4" TFT (SPI) | Already have |
+| EC11 rotary encoder with push button | Need to buy (~$1) |
+| USB-Serial adapter (CH340/CP2102) | Optional (~$1-2) |
+| Resistors / capacitors / wiring | Already have |
+
+> **Descoped:** the PAM8403 amp module and the DAC1-based hardware-volume path from the early plan. The MAX98357A is DAC + amp in one; the PAM8403 (line-level input) cannot be fed from the MAX98357A's speaker-level output, so it had no place in a mono-speaker build. Volume is software gain only.
 
 ---
 
@@ -52,7 +54,6 @@ STM32F411 Black Pill
     ├── DMA1        ─── moves PCM samples to I2S
     ├── SPI1 (PA5/PA7)      → drives ST7735S TFT display
     ├── TIM4 (encoder mode) ─── reads rotary encoder
-    ├── DAC1        ─── PAM8403 hardware volume control
     └── USART2      ─── debug output
     │
     ├──▶ MAX98357A → Speaker
@@ -74,20 +75,20 @@ The firmware is built in **8 phases**, each with a clean, demonstrable deliverab
 **Time:** Day 1-2
 
 **Tasks:**
-- [ ] Install STM32CubeIDE
-- [ ] Connect ST-Link V2 to Black Pill (SWCLK, SWDIO, GND, 3V3)
-- [ ] Create new project for STM32F411CEU6
-- [ ] Configure PA0 as GPIO output → blinky
-- [ ] Configure USART2 (PA2 TX, PA3 RX) at 115200 baud
-- [ ] Print "Hello World" over serial
-- [ ] Test serial output with TeraTerm/PuTTY
+- [x] Install STM32CubeIDE
+- [x] Connect ST-Link V2 to Black Pill (SWCLK, SWDIO, GND, 3V3)
+- [x] Create new project for STM32F411CEU6
+- [x] Configure PA0 as GPIO output → blinky
+- [x] Configure USART2 (PA2 TX, PA3 RX) at 115200 baud
+- [x] Print "Hello World" over serial
+- [x] Test serial output with TeraTerm/PuTTY
 
 **Deliverable:** LED blinks, serial prints "Hello World"
 
 ---
 
 ### **Phase 1 — Clock Tree from Scratch** ✅
-**Goal:** Configure HSE → PLL → 48 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S clock
+**Goal:** Configure HSE → PLL → 48 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 96 MHz I2S clock
 **Peripherals:** RCC, PLL, PWR
 **Time:** Day 2-4
 
@@ -123,8 +124,8 @@ FLASH_LATENCY_1
 
 **Final working configuration (CubeMX `.ioc` + `main.c`):**
 - ✅ I2S2: Master TX, Philips standard, **16-bit data, 32-bit frame**, MCLK disabled
-- ✅ Audio Frequency: `I2S_AUDIOFREQ_44K` (real ≈ 44.117 kHz, +0.04% error)
-- ✅ Clock Source: `I2S_CLOCK_PLL` (PLLI2S=48 MHz)
+- ✅ Audio Frequency: `I2S_AUDIOFREQ_44K` (real ≈ 44.117 kHz, +0.04% vs nominal 44.1 kHz)
+- ✅ Clock Source: `I2S_CLOCK_PLL` (PLLI2S → 96 MHz I2SCLK)
 - ✅ CPOL = LOW (Philips standard)
 - ✅ DMA1 Stream 4 / Channel 0 for I2S2_TX, Circular mode, FIFO FULL, HALFWORD, priority HIGH
 - ✅ DMA1_Stream4 IRQ enabled at priority 0,0
@@ -150,10 +151,9 @@ FLASH_LATENCY_1
 5. Why music won't have this problem: real audio is streamed continuously into the DMA buffer (USB ISR fills the half just played). The buffer is never looped → no snap. The "integer-cycles" rule is a test-tone-only constraint.
 
 **I2S divider math (for future debugging):**
-- HAL formula: `i2sdiv = ROUND(i2sclk / (packetlength × AudioFreq))`
-- For Philips 16-bit data: packetlength = 32 (16 bits × 2 channels), not 16
-- With I2SCLK=48 MHz, AudioFreq=44.1 kHz: `i2sdiv = ROUND(48e6 / (32 × 44100)) = 17` → BCLK = 48e6/17/2 = 1.412 MHz
-- If you ever see BCLK = 3 MHz instead of 1.4 MHz, the I2S peripheral is treating the frame as 64 bits (16B_EXTENDED), not 32 — check `I2S_Init.DataFormat`
+- HAL formula: `i2sdiv = ROUND(i2sclk / (2 × packetlength × AudioFreq))`, packetlength = bits/frame (32 for Philips 16-bit data)
+- With I2SCLK=96 MHz, AudioFreq=44.1 kHz: `i2sdiv = ROUND(96e6 / (2 × 32 × 44100)) = 34` → BCLK = 96e6 / (2×34) = 1.412 MHz
+- If you ever see BCLK ≈ 3 MHz instead of 1.4 MHz, the I2S peripheral is treating the frame as 64 bits (16B_EXTENDED), not 32 — check `I2S_Init.DataFormat` (with 64-bit frames `i2sdiv = ROUND(96e6 / (2 × 64 × 44100)) = 17` → BCLK ≈ 2.82 MHz)
 
 **Deliverable:** Audible, verified 1 kHz tone on speaker. Phase 2 complete.
 
@@ -163,7 +163,7 @@ FLASH_LATENCY_1
 **Goal:** PC recognizes Black Pill as a USB speaker, audio packets from PC play through MAX98357A
 **Peripherals:** USB OTG FS (PA11/PA12), I2S2 + DMA1 (Phase 2)
 **Time:** Day 7-12
-**Mode:** TUTOR — I generated the descriptors + ST-library glue, you wrote the audio plumbing (ring buffer + I2S refill callbacks). Full debugging story is in `PROGRESS.md` → Phase 3 (three silent-failure bugs each took an evening to track down — read it before re-touching the USB code).
+**Mode:** TUTOR — generated descriptors + ST-library glue, student wrote the audio plumbing (ring buffer + I2S refill callbacks). Full debugging story is in `PROGRESS.md` → Phase 3 (three silent-failure bugs each took an evening to track down — read it before re-touching the USB code).
 
 **Architecture:**
 ```
@@ -172,7 +172,7 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
                  driver,          glue: AUDIO_         1024 samples        callbacks
                  isochronous      CMD_PLAY →          = 23 ms @ 44.1      refill from
                  OUT handler)     RingBuffer_Write)    kHz)                ring, silence
-                                                                             on underrun)
+                                                                              on underrun)
 ```
 
 **Audio format (advertised in USB descriptor):**
@@ -185,26 +185,26 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 
 | File | Written by | Purpose |
 |---|---|---|
-| `USB_Audio_DAC_1.0/Middlewares/ST/STM32_USB_Device_Library/...` | ST vendor | Unmodified USB Audio class driver + OTG FS core. Provided by the library, not hand-written. |
-| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_audio_if.c` | Tutor | Bridges the class driver to our ring buffer. `AUDIO_AudioCmd_FS` is the user-side hook that the class driver calls with `AUDIO_CMD_PLAY` when a fresh USB packet arrives; this is where `RingBuffer_Write` lives. `TransferComplete_CallBack_FS` / `HalfTransfer_CallBack_FS` are the user-side hooks called by `USBD_AUDIO_Sync`. |
-| `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_desc.c` | Tutor | Device descriptor + configuration descriptor; one mono streaming endpoint, bNrChannels=1. |
-| `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.c` | Tutor | HAL_PCD_MspInit, USBD static-malloc hooks, **vbus_sensing = DISABLE** (Bug 1). |
-| `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.h` | Tutor | **`#define USBD_AUDIO_FREQ 44100U`** — must match the .ioc or you get Bug 2. |
-| `USB_Audio_DAC_1.0/Core/Src/ring_buffer.c` + `.h` | Student | Lock-free SPSC ring: `Reset`, `Write`, `Read`, `Available`, `Space`. 1024 int16, power of 2. |
-| `USB_Audio_DAC_1.0/Core/Src/audio_i2s.c` + `.h` | Student | Pulls mono samples from the ring and lays them into the I2S DMA buffer as L=R stereo. `RefillHalfA` / `RefillHalfB` are the consumer side of the SPSC ring. Underrun = silence (memset to 0). |
-| `USB_Audio_DAC_1.0/Core/Src/stm32f4xx_it.c` | Tutor | HAL I2S callbacks invoke `HalfTransfer_CallBack_FS` / `TransferComplete_CallBack_FS` **first** (Bug 3) and `AudioI2S_RefillHalfA/B` second. Order matters. |
-| `USB_Audio_DAC_1.0/Core/Src/main.c` | Student | Init order: HAL → I2S2 + start circular DMA → USB device stack → main loop. |
+| `Middlewares/ST/STM32_USB_Device_Library/...` | ST vendor | Unmodified USB Audio class driver + OTG FS core. |
+| `USB_DEVICE/App/usbd_audio_if.c` | Tutor | Bridges class driver → ring buffer. `AUDIO_AudioCmd_FS` (AUDIO_CMD_PLAY → `RingBuffer_Write`); `TransferComplete_FS`/`HalfTransfer_FS` hooks called by `USBD_AUDIO_Sync`. |
+| `USB_DEVICE/App/usbd_desc.c` | Tutor | Device + configuration descriptor; mono streaming endpoint, bNrChannels=1. |
+| `USB_DEVICE/Target/usbd_conf.c` | Tutor | HAL_PCD_MspInit, USBD static-malloc hooks, **vbus_sensing = DISABLE** (Bug 1). |
+| `USB_DEVICE/Target/usbd_conf.h` | Tutor | **`#define USBD_AUDIO_FREQ 44100U`** — must match the .ioc (Bug 2). |
+| `Core/Src/ring_buffer.c` + `.h` | Student | Lock-free SPSC ring: `Reset`, `Write`, `Read`, `Available`, `Space`. 1024 int16, power of 2. |
+| `Core/Src/audio_i2s.c` + `.h` | Student | Pulls mono from ring → I2S DMA buffer as L=R stereo. `RefillHalfA/B` = SPSC consumer. Underrun = silence. |
+| `Core/Src/stm32f4xx_it.c` | Tutor | HAL I2S callbacks call `HalfTransfer_FS`/`TransferComplete_FS` **first** (Bug 3), `AudioI2S_RefillHalfA/B` second. Order matters. |
+| `Core/Src/main.c` | Student | Init order: HAL → I2S2 + start circular DMA → USB device stack → main loop. |
 
 **What we actually built (replaces the earlier "build order with verification" plan):**
 
 | Step | What | Verifies with |
 |---|---|---|
-| 1 | `.ioc`: enable `USB_OTG_FS` as Device_Only, `USB_DEVICE` middleware → Audio Class 1.0, `USBD_AUDIO_FREQ=44100`, I2S2 at 44.1K with DMA1 Stream 4. Regenerate. | `make` succeeds; `Middlewares/.../usbd_audio.*` appears. |
+| 1 | `.ioc`: enable `USB_OTG_FS` Device_Only, Audio Class 1.0 middleware, `USBD_AUDIO_FREQ=44100`, I2S2 @ 44.1K + DMA1 Stream 4. Regenerate. | `make` succeeds; `Middlewares/.../usbd_audio.*` appears. |
 | 2 | Vendor library: copy ST USB Device Library into `Middlewares/ST/STM32_USB_Device_Library/`. | `make` still succeeds. |
 | 3 | Write `USB_DEVICE/App/usbd_audio_if.c`, `usbd_desc.c`, `Target/usbd_conf.c/.h`. | `make` succeeds; `lsusb` shows `bInterfaceClass=1 Audio` (after Bug 1 fix). |
-| 4 | Write `Core/Src/ring_buffer.c` (SPSC, 1024 samples) and `Core/Src/audio_i2s.c` (pull from ring, lay into I2S DMA buffer as L=R). | `make` succeeds; ring logic testable in isolation. |
-| 5 | Wire `AUDIO_AudioCmd_FS` (AUDIO_CMD_PLAY) → `RingBuffer_Write`. Wire `USBD_AUDIO_Sync` call from HAL I2S callbacks (Bug 3). | `speaker-test -D plughw:2,0 -c 1 -r 44100 -t sine -f 1000` plays 1 kHz out of speaker. **Phase 3 done.** |
-| 6 | Verify with `aplay` on a real WAV. | Music plays. |
+| 4 | Write `Core/Src/ring_buffer.c` (SPSC, 1024) and `Core/Src/audio_i2s.c` (ring → L=R DMA buffer). | `make` succeeds; ring testable in isolation. |
+| 5 | Wire `AUDIO_AudioCmd_FS` (PLAY) → `RingBuffer_Write`. Wire `USBD_AUDIO_Sync` from HAL I2S callbacks (Bug 3). | `speaker-test -D plughw:2,0 -c 1 -r 44100 -t sine -f 1000` plays 1 kHz. **Phase 3 done.** |
+| 6 | Verify `aplay` on a real WAV. | Music plays. |
 
 **Key descriptor bytes (so the next reader knows what to expect):**
 - `bNrChannels = 1`, `bSubSlotSize = 2`, `bBitResolution = 16`, `tSamFreq = 0x00AC44` (44100)
@@ -233,45 +233,46 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 
 ---
 
-### **Phase 4 — Rotary Encoder Volume Control**
+### **Phase 4 — Rotary Encoder Volume Control (software gain)**
 **Goal:** Turn encoder to change volume, press to mute
-**Peripherals:** TIM4 (encoder mode), EXTI, DAC1
+**Peripherals:** TIM4 (encoder mode), EXTI
 **Time:** Day 12-14
+
+> **Design note:** volume is **software gain** — the encoder multiplies PCM samples before they reach the I2S DMA buffer. The earlier DAC1 → RC → PAM8403 "hardware volume" path is descoped (see §2).
 
 **Tasks:**
 - [ ] Read RM0383 Chapter 14 (TIM encoder mode)
 - [ ] Wire rotary encoder: A pin → PB6, B pin → PB7, button → PB8
 - [ ] Configure TIM4 in encoder mode 3 (count both edges on both channels)
-- [ ] On encoder count change: update volume 0-100%
-- [ ] Apply software gain: multiply PCM samples by (volume/100) before I2S
-- [ ] Configure DAC1 on PA4 → RC filter (1 kΩ + 100 nF) → PAM8403 VOL pin
-- [ ] Update DAC output to track software volume
+- [ ] Add `encoder.c/h` (or integrate with TIM4_IRQHandler) — read TIM4 CNT, detect direction, publish deltas
+- [ ] Add `volume.c/h` — clamp 0..100%, expose `Volume_Get()`, mute latch
+- [ ] Apply software gain: multiply PCM samples by (volume/100) in `audio_i2s.c` before I2S
 - [ ] EXTI on button press → toggle mute
+- [ ] Wire the existing no-op `AUDIO_VolumeCtl_FS` in `usbd_audio_if.c` to the same gain (closes the deferred item)
 
 **Deliverable:** Turn encoder → music volume changes; press → mute
 
 ---
 
 ### **Phase 5 — ST7735S TFT Audio Visualizer**
-**Goal:** Display volume level and audio spectrum bars in full color
+**Goal:** Display volume level and audio level bars in full color
 **Peripherals:** SPI1, GPIO
 **Time:** Day 14-17
 
 **Tasks:**
-- [ ] Wire ST7735S TFT: SCK → PA5, MOSI → PA7, CS → PB0, DC → PA0, RST → PA1, LED → PA2
-**Note:** Updated to use ST7735S TFT (SPI interface) instead of SSD1306 OLED (I2C) for full-color visualizer.
-- [ ] Find/port a minimal ST7735S SPI driver (don't write from scratch — use Adafruit_ST7735 or TFT_eSPI)
+- [ ] Wire ST7735S TFT: SCK → PA5, MOSI → PA7, CS → PB0, DC → PA0, RST → PA1, LED → PA2 (see README pinout)
+- [ ] Find/port a minimal ST7735S SPI driver (Adafruit_ST7735 or TFT_eSPI; don't write from scratch)
 - [ ] Configure SPI1 in master TX mode, clock ≤ 18 MHz, MSB first, mode 0
 - [ ] Display: current volume %, audio level bar, status text
 - [ ] Calculate audio level: peak of last N PCM samples
-- [ ] Display audio spectrum (FFT) with colored bars (green→yellow→red gradient)
+- [ ] Display audio level with colored bars (green→yellow→red gradient)
 - [ ] Update display at 30-60 Hz (smooth animation, no flicker)
 - [ ] Add startup splash screen with project name in color
 - [ ] Implement basic drawing primitives: rectangles, lines, text, color fills
 
-**Deliverable:** ST7735S shows live volume, audio level, and spectrum analyzer
+**Deliverable:** ST7735S shows live volume and audio level
 
-**Note:** CS pin moved from PA4 to PB0 to avoid conflict with DAC1 in Phase 4.
+**Note:** CS is on **PB0** (kept from an earlier plan that routed DAC1 to PA4). PA4 stays free.
 
 ---
 
@@ -284,7 +285,7 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 - [ ] Add FreeRTOS via CubeMX (CMSIS-RTOS wrapper or native FreeRTOS)
 - [ ] Configure heap (heap_4.c) and 4 tasks:
   - **Task Audio** (priority HIGH): USB → ring buffer → I2S DMA refill
-  - **Task Display** (priority MED): OLED update at 10 Hz
+  - **Task Display** (priority MED): TFT update at 30 Hz
   - **Task Encoder** (priority MED): poll encoder, update volume
   - **Task Debug** (priority LOW): USART stats every 1 sec
 - [ ] Use queue: Audio task → Display task (audio level samples)
@@ -298,14 +299,14 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 ---
 
 ### **Phase 7 — Polish & Documentation**
-**Goal:** Clean code, write README, prepare for project demo
+**Goal:** Clean code, finalize README, prepare for project demo
 **Time:** Day 22-25
 
 **Tasks:**
 - [ ] Add boot splash screen with project title
-- [ ] Verify all 7 phases work end-to-end
+- [ ] Verify all phases work end-to-end
 - [ ] Code cleanup: comments, naming, file structure
-- [ ] Write README.md: build instructions, hardware wiring diagram, usage
+- [ ] Finalize README.md: build instructions, hardware wiring diagram, usage
 - [ ] Write learning journal: what each phase taught
 - [ ] Optional: 3D print a small enclosure
 
@@ -322,16 +323,15 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 | GPIO | Ch. 8 | All phases |
 | DMA1 | Ch. 9 | Phase 2, 3, 6 |
 | NVIC, EXTI | Ch. 10 | Phase 4, 6 |
-| ADC1 | Ch. 11 | (optional, not in core) |
-| DAC1 | Ch. 12 | Phase 4 |
+| DAC1 | Ch. 12 | *(descoped — software gain only)* |
 | TIM4 (encoder) | Ch. 14 | Phase 4 |
 | TIM3 (periodic) | Ch. 13 | Phase 6 |
-| I2C1 | Ch. 27 | Phase 5 |
+| SPI1 | Ch. 26 | Phase 5 |
 | I2S2 (via SPI2) | Ch. 28 | Phase 2, 3, 6 |
 | USART2 | Ch. 26 | Phase 0, 3, 6 |
 | USB OTG FS | Ch. 31 | Phase 3, 6 |
 | SysTick | Core | Phase 6 |
-| FPU | Core | (optional, CMSIS-DSP) |
+| FPU | Core | *(optional, CMSIS-DSP)* |
 
 ---
 
@@ -341,13 +341,11 @@ USB_PC ──USB──▶ usbd_audio.c ──▶ usbd_audio_if.c ──▶ ring_
 Core/
 ├── Src/
 │   ├── main.c                  — system init, task creation
-│   ├── clocks.c/h              — Phase 1: register-level clock config
-│   ├── audio_i2s.c/h           — Phase 2-3: I2S + DMA driver
-│   ├── usb_audio.c/h           — Phase 3: USB audio callbacks
+│   ├── audio_i2s.c/h           — Phase 2-3: I2S + DMA driver; Phase 4: gain hook
+│   ├── ring_buffer.c/h         — Phase 3: USB ↔ I2S buffer
 │   ├── encoder.c/h             — Phase 4: rotary encoder driver
-│   ├── volume.c/h              — Phase 4: software + hardware volume
-│   ├── display.c/h             — Phase 5: SSD1306 + visualizer
-│   └── ring_buffer.c/h         — Phase 3: USB ↔ I2S buffer
+│   ├── volume.c/h              — Phase 4: software gain + mute
+│   └── display.c/h             — Phase 5: ST7735S + visualizer
 ├── Inc/
 │   └── (headers)
 └── Startup/
@@ -362,32 +360,15 @@ Core/
 |------|---------|------|
 | STM32CubeIDE | IDE + compiler | Free |
 | STM32CubeMX | Peripheral config | Free |
-| ST-Link V2 | Flash + debug | ~$2-3 |
+| ST-Link V2 | Flash + debug | Owned |
 | USB-Serial adapter (CP2102/CH340) | Optional, for debug serial | ~$1 |
 | TeraTerm / PuTTY | Serial terminal | Free |
 | PC with music player | Audio source | Free |
-| Multimeter | Voltage checks | Already have |
+| Multimeter | Voltage checks | Owned |
 
-**No logic analyzer or oscilloscope required** — clock and signal verification done via serial debug output and audio listening tests.
+**No logic analyzer or oscilloscope required** — clock and signal verification is done via serial debug output and audio listening tests.
 
-### Build & Flash Commands
-
-The CubeMX-generated project lives in `USB_Audio_DAC_1.0/`. Build and flash from that directory.
-
-**Toolchain:** `arm-none-eabi-gcc` (Arch Repository, version 16.2.0)
-**Flash tools:** `st-flash` (ST-Link V2) and `openocd` are available
-
-```bash
-cd USB_Audio_DAC_1.0
-make                    # Full build
-make V=1                # Verbose build
-make clean              # Clean build artifacts
-st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000   # Flash
-st-flash erase 0x08000000 512K                           # Erase
-st-flash reset                                           # Reset
-```
-
-> The active project is the CubeMX-generated `USB_Audio_DAC_1.0/` (not a hand-rolled register-level project). It uses ST's HAL drivers and a CubeMX-generated Makefile.
+Build, test & flash commands live in **README.md → Build & Flash** (single source of truth).
 
 ---
 
@@ -397,6 +378,7 @@ st-flash reset                                           # Reset
 - [x] Phase 1: Clock tree configured (HSE=25 MHz, SYSCLK=48 MHz, USBCLK=48 MHz, I2SCLK=96 MHz from PLLI2S) ✅
 - [x] Phase 2: **1 kHz tone verified on online frequency meter** ✅
 - [x] Phase 3: **PC plays audio through MAX98357A** — `lsusb` shows Audio class, `speaker-test -f 1000/2000/3000/4000` all audible, `aplay` on WAV works. See Phase 3 section for the three-bug story. ✅
+- [ ] Phase 3.5 stress test: 10-min continuous playback (see PROGRESS.md "Deferred Items")
 - [ ] Phase 4: Encoder rotates → volume changes, press → mute
 - [ ] Phase 5: TFT shows live volume and audio level
 - [ ] Phase 6: 30-min stress test passes with all RTOS tasks running
