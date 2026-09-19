@@ -186,6 +186,7 @@ UsbAudioDac/
 │   ├── STM32F411xx_FLASH.ld       # Linker script (512K flash, 128K RAM, 64K CCMRAM)
 │   └── USB_Audio_DAC_1.0.ioc      # CubeMX project file
 ├── README.md                      # This file — overview, hardware, build, status
+├── WIRING.md                      # Full MCU↔peripheral pin map + CubeMX config
 ├── IMPLEMENTATION_PLAN.md         # 8-phase plan with task breakdowns
 ├── PROGRESS.md                    # Working log + changelog + debugging stories
 └── AGENTS.md                      # Project context for AI assistants
@@ -255,6 +256,7 @@ Phase 3 had three silent-failure bugs that each took an evening to track down �
 ## Reference Documents
 
 - [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — Full 8-phase plan with task breakdowns
+- [WIRING.md](WIRING.md) — Full MCU↔peripheral pin map + CubeMX config for upcoming phases
 - [PROGRESS.md](PROGRESS.md) — Phase-by-phase working log + changelog + debugging stories
 - [AGENTS.md](AGENTS.md) — Project context for AI assistants
 - `STM32F411CEU6/` — Datasheet and reference manual PDFs

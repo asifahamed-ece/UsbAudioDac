@@ -80,6 +80,7 @@ aplay -D plughw:2,0 your_audio.wav
 ## Reference Documents
 
 - `README.md` — Overview, hardware/BOM/wiring, build & verify, status
+- `WIRING.md` — Full MCU↔peripheral pin map + CubeMX config for upcoming phases
 - `IMPLEMENTATION_PLAN.md` — Full 8-phase plan with task breakdowns
 - `PROGRESS.md` — Phase-by-phase working log + changelog + debugging stories
 - `STM32F411CEU6/` — Datasheet and reference manual PDFs
