@@ -31,12 +31,55 @@ Single source of truth for every MCU↔peripheral connection. Sections **A/B are
 | MCU Pin | Function | → | MAX98357A | Wiring |
 |---------|----------|---|-----------|--------|
 | PB10 | I2S2_CK (AF5) | → | BCLK | jumper |
-| PB12 | I2S2_WS (AF5) | → | LRC | jumper |
+| PB12 | I2S2_WS (AF5) | → | LRC/LRCLK | jumper |
 | PB15 | I2S2_SD (AF5) | → | DIN | jumper |
+| — | GPIO out (opt.) | → | SD | **optional mute** (see ↓) |
 | GND | ground | → | GND | **must share MCU ground** |
-| 5V | power | → | VIN | 5V = louder; 3V3 also works |
+| 5V | power | → | VIN | 2.5–5.5 V; 5 V = full power |
 
-> I2S format: Philips standard, 16-bit data / 32-bit frame, 44.117 kHz. Verified playing.
+> I2S format: Philips standard, 16-bit data / 32-bit frame, 44.117 kHz, **no MCLK used** (this amp needs no MCLK — leave any MCLK output disconnected). Verified playing.
+
+### MAX98357A module pinout & configuration reference
+
+| Module pin | Function | Notes |
+|------------|----------|-------|
+| **LRC** | Frame clock / word select | Driven by PB12. **Not configurable.** I2S convention: LRCLK **low = left** word, high = right |
+| **BCLK** | Bit clock | Driven by PB10 |
+| **DIN** | Data in | Driven by PB15 (both L+R words on this one pin) |
+| **SD** (also labelled "SCK" on clones) | Shutdown **+ channel select** — strapped at power-up | Internal 100 kΩ pull-down inside the amp (see table ↓) |
+| **GAIN** (also "GAIN_SLOT") | Amplifier gain — strapped at power-up | 5 levels; part number is read, **not** register-set |
+| **VIN** | Power 2.5–5.5 V | 5 V → 1.8 W @ 8 Ω (10% THD); 3.3 V → ~0.8 W |
+| **GND** | Ground | Share with MCU ground |
+| Speaker (OUTP/OUTN) | Bridge-tied class-D output | **Moving-coil ≥ 4 Ω only** — never use it as a pre-amp |
+
+#### GAIN pin → gain (I2S mode, from datasheet Table 1 / JU5 + Adafruit)
+
+| GAIN connection | Gain | Use case |
+|-----------------|------|----------|
+| GAIN → GND | **12 dB** | Good "loud + headroom" baseline |
+| GAIN → nothing (float) | **9 dB (factory default)** | Cleanest / least hiss — keep this |
+| GAIN → GND via 100 kΩ | 15 dB | Maximum |
+| GAIN → VIN | 6 dB | Quiet source, low-noise |
+| GAIN → VIN via 100 kΩ | 3 dB | Minimum |
+
+#### SD (SD_MODE) pin → shutdown & channel (datasheet Table 5, trip points B0/B1/B2)
+
+| Voltage on SD | Result |
+|---------------|--------|
+| < 0.16 V (tie SD → GND) | **Shutdown** (µA quiescent — hardware mute) |
+| 0.16 – 0.77 V | **(L+R)/2** mono mix |
+| 0.77 – 1.4 V | **Right** word only |
+| > 1.4 V (tie SD → 3V3/5V) | **Left** word only — recommended |
+| Floating | NOT safe: internal 100 kΩ pull-down drags SD near GND → shutdown/flicker. On Adafruit-style boards a 1 MΩ pull-up to VIN biases it into mono-mix. |
+
+#### Practical wiring for this project
+
+- **Left SD exactly as the board shipped** — it already plays. Do nothing on GAIN/SD unless you need to change something.
+- Optional hardware **mute / power-save (Phase 4+):** drive SD from an MCU GPIO (push-pull, 3.3 V logic, no resistor needed):
+  `GPIO high → left-channel play`, `GPIO low → shutdown`. 3.3 V is safely above the 1.4 V B2 trip point, 0 V below the 0.16 V B0 point. Pick a spare pin (e.g. PB9). Don't tie SD to a clock pin — it is *not* an I2S clock.
+- **Channel select doesn't affect audio here** — the firmware sends identical L/R samples per frame, so left / right / mono all sound identical. Left is the convention to use.
+- Gain vs. volume: I2S full-scale is fixed, so gain just sets how loud that is; keep 9 dB (default) and let the Phase 4 **software volume** scale the samples.
+- Verify what *your* module strapped: with the board powered off, measure GAIN/SD continuity to VIN/GND (R×1k) — or just leave it, since it works.
 
 ## B) USB — OTG FS ✅ WIRED & WORKING
 
