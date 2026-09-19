@@ -6,9 +6,9 @@
 ![USB Audio](https://img.shields.io/badge/USB-Audio%20Class%201.0-purple.svg)
 ![I2S](https://img.shields.io/badge/Protocol-I2S%20%2B%20DMA-red.svg)
 
-A self-built USB speaker built on the **STM32F411CEU6 Black Pill**. When connected to a PC via USB, it enumerates as a standard USB Audio Class 1.0 device — no drivers needed. Audio data flows from the PC over USB, is decoded to analog via I2S, and played through a **MAX98357A** DAC + Class D amplifier driving a 4-ohm speaker.
+A self-built USB speaker built on the **STM32F411CEU6 Black Pill**. When connected to a PC via USB, it enumerates as a standard USB Audio Class 1.0 device — no drivers needed. Audio data flows from the PC over USB, is decoded to analog via I2S, and played through a **MAX98357A** DAC + Class D amplifier driving an **8 Ω** speaker.
 
-A rotary encoder controls volume, and an ST7735S TFT displays a real-time audio visualizer.
+A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) will display a real-time audio visualizer.
 
 <!-- ![Hardware Setup](photos/hardware_setup.jpg) -->
 <!-- ![USB Audio Playing](photos/playing.jpg) -->
@@ -19,82 +19,71 @@ A rotary encoder controls volume, and an ST7735S TFT displays a real-time audio 
 
 - **USB Audio Class 1.0** — Plug-and-play USB speaker on Linux, Windows, macOS
 - **44.1 kHz / 16-bit / Mono** audio over USB isochronous endpoint
-- **I2S + DMA** output to MAX98357A DAC + 3W Class D amplifier
+- **I2S + DMA** output to MAX98357A DAC + 3 W Class D amplifier
 - **Lock-free SPSC ring buffer** — 23 ms of audio headroom between USB and I2S
-- **Rotary encoder volume control** with hardware DAC volume (Phase 4)
-- **ST7735S TFT visualizer** with real-time audio spectrum (Phase 5)
+- **Rotary encoder volume control** via software gain + mute button (Phase 4)
+- **ST7735S TFT visualizer** with real-time audio level (Phase 5)
 - **FreeRTOS-based** multitasking architecture (Phase 6)
-- **Low cost** — ~$10-13 in parts
+- **Low cost** — ~$8-10 in parts; most components already owned
 
 ---
 
 ## Hardware
 
-| Component | Role |
-|-----------|------|
-| **STM32F411CEU6 Black Pill** | Main MCU (Cortex-M4, 100 MHz, 128 KB RAM, 512 KB Flash) |
-| **MAX98357A** | I2S DAC + Class D amplifier module |
-| **4-ohm speaker** | Audio output |
-| **ST7735S 1.4" TFT** | Audio visualizer display (128x128, SPI) |
-| **Rotary encoder (EC11)** | Volume control + mute button |
-| **ST-Link V2** | Flash programmer and debugger |
+| Component | Role | Status |
+|-----------|------|--------|
+| **STM32F411CEU6 Black Pill** | Main MCU (Cortex-M4, 100 MHz, 128 KB RAM, 512 KB Flash) | ✅ Owned |
+| **MAX98357A** | I2S DAC + Class D amp module (3 W @ 4 Ω, ~1.7 W @ 8 Ω) | ✅ Owned |
+| **8 Ω speaker** (DCR ≈ 7 Ω) | Mono audio output | ✅ Owned |
+| **ST7735S 1.4" TFT** | Audio visualizer display (128x128, SPI) | ✅ Owned |
+| **Rotary encoder (EC11)** | Volume control + mute button | ⏳ To buy (~$1) |
+| **USB-Serial adapter (CH340/CP2102)** | `printf` debug over USART2 | ⏳ Optional (~$1-2) |
+| **ST-Link V2** | Flash programmer and debugger | ✅ Owned |
+| **Passive components (R, C)** | Decoupling, filter, debounce | ✅ Owned |
 
-### Bill of Materials
+> **On amplifiers:** the MAX98357A is the *complete* DAC + amp for the mono speaker — it needs no second stage. The PAM8403 from the early plan was **descoped**: its line-level input cannot be driven from the MAX98357A's speaker-level output (cascading two power amps only distorts), so it had no role in a mono-speaker build. The 8 Ω speaker is verified by DCR: 7 Ω on the multimeter = nominal 8 Ω.
 
-| Item | Qty | Purpose | Cost |
-|------|-----|---------|------|
-| STM32F411CEU6 Black Pill | 1 | Main MCU | ~$5 |
-| MAX98357A I2S DAC + amp | 1 | DAC + amplifier | ~$3 |
-| 4-ohm speaker | 1 | Audio output | ~$1 |
-| ST7735S 1.4" TFT (SPI) | 1 | Visualizer display | ~$3 |
-| Rotary encoder (EC11) | 1 | Volume control | ~$1 |
-| ST-Link V2 | 1 | Flash + debug | ~$2-3 |
-| USB-C cable | 1 | PC connection | ~$1 |
-| Jumper wires + breadboard | 1 | Prototyping | ~$2 |
-| Passive components (R, C) | — | RC filter, decoupling | ~$0.50 |
-| **Total** | | | **~$10-13** |
+### Wiring summary
 
-> See [BOM.md](BOM.md) for the full bill of materials with optional upgrades and sourcing guidance.
+- **Audio out (I2S2 → MAX98357A):** PB10=BCLK, PB12=WS/LRC, PB15=SDIN, GND, 3V3/5V=VIN
+- **USB OTG FS:** PA11=D-, PA12=D+
+- **Encoder (Phase 4, planned):** PB6=A, PB7=B (TIM4 encoder mode), PB8=button (EXTI, mute)
+- **TFT (Phase 5, planned):** SPI1 — see pinout below
+
+### ST7735S TFT Pinout (SPI)
+
+**⚠️ 3.3 V only — do NOT connect the display to 5 V.**
+
+| Display Pin | Function | STM32F411 Pin |
+|-------------|----------|---------------|
+| VCC / GND | Power | 3V3 / GND |
+| CS | Chip select (active low) | PB0 |
+| RESET | Hardware reset (active low) | PA1 |
+| DC | Data/Command (0 = cmd, 1 = data) | PA0 |
+| SDA (MOSI) | SPI data | PA7 (SPI1_MOSI) |
+| SCL (SCK) | SPI clock | PA5 (SPI1_SCK) |
+| LED | Backlight (anode) | PA2 (optional — can tie to 3V3) |
+
+**Connections:** SPI1 (PA5, PA7) + control pins (PB0, PA0, PA1, PA2) + power (3V3, GND) = 8 wires. CS is on **PB0** (kept from an earlier plan that routed DAC1 to PA4).
 
 ---
 
-## Wiring
+## Bill of Materials
 
-### I2S Audio Output (MAX98357A)
+| Item | Qty | Cost | Status |
+|------|-----|------|--------|
+| STM32F411CEU6 Black Pill | 1 | $0 | ✅ Owned |
+| MAX98357A I2S DAC + amp | 1 | $0 | ✅ Owned |
+| 8 Ω speaker (DCR ~7 Ω) | 1 | $0 | ✅ Owned |
+| ST7735S 1.4" TFT (SPI) | 1 | $0 | ✅ Owned |
+| Rotary encoder (EC11) with push button | 1 | ~$1 | ⏳ **To buy** |
+| USB-Serial adapter (CH340) | 1 | ~$1-2 | ⏳ Optional |
+| Resistors / capacitors | various | $0 | ✅ Owned |
+| ST-Link V2 | 1 | — | ✅ Owned |
+| USB-C cable, jumpers, breadboard | — | — | ✅ Owned |
+| **Total to buy** | | | **~$1-3** |
 
-| STM32 Pin | Function | MAX98357A Pin |
-|-----------|----------|---------------|
-| PB10 | I2S2 Clock (BCLK) | BCLK |
-| PB12 | I2S2 Word Select (LRCLK) | LRC |
-| PB15 | I2S2 Serial Data (SDIN) | DIN |
-| GND | Ground | GND |
-| 3V3 or 5V | Power | VIN |
-
-### USB OTG Full-Speed
-
-| STM32 Pin | Function |
-|-----------|----------|
-| PA11 | USB D- |
-| PA12 | USB D+ |
-
-### ST7735S TFT Display (Planned)
-
-| STM32 Pin | Display Pin | Function |
-|-----------|-------------|----------|
-| PA5 | SCK | SPI Clock |
-| PA7 | MOSI | SPI Data |
-| PB0 | CS | Chip Select |
-| PA0 | DC | Data/Command |
-| PA1 | RST | Reset |
-| PA2 | LED | Backlight |
-
-### Rotary Encoder (Planned)
-
-| STM32 Pin | Encoder Pin | Function |
-|-----------|-------------|----------|
-| PB6 | A | TIM4 Encoder Ch A |
-| PB7 | B | TIM4 Encoder Ch B |
-| PB8 | Button | EXTI (mute) |
+**Where to buy:** AliExpress (cheapest, slowest), Amazon (faster, pricier), or local electronics shops for passives. For the whole project, only the **EC11 encoder** is strictly required; the CH340 serial adapter is recommended for Phase 4-6 debug output.
 
 ---
 
@@ -125,7 +114,7 @@ STM32F411 Black Pill
     │   MAX98357A ──────── I2S DAC + Class D amp
     │       │
     │       ▼
-    └──▶ 4-ohm Speaker
+    └──▶ 8 Ω Speaker
 ```
 
 ---
@@ -139,25 +128,18 @@ STM32F411 Black Pill
 - `make`
 - ST-Link V2 programmer connected to the Black Pill
 
-### Build
+### Build, test & flash
 
 ```bash
 cd USB_Audio_DAC_1.0
-make
+make                    # Build (arm-none-eabi-gcc)
+make test               # Host-simulated ring-buffer unit tests (host gcc, no ARM toolchain)
+make size               # Per-section memory usage
+make flash              # Flash via st-flash
+make clean              # Clean
 ```
 
-### Flash
-
-```bash
-cd USB_Audio_DAC_1.0
-st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000
-```
-
-### Clean
-
-```bash
-make clean
-```
+Equivalent manual flash: `st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000`
 
 ### Verify (Linux)
 
@@ -180,32 +162,33 @@ aplay -D plughw:2,0 your_audio.wav
 
 ```
 UsbAudioDac/
-├── USB_Audio_DAC_1.0/           # Active CubeMX project
+├── USB_Audio_DAC_1.0/             # Active CubeMX project
 │   ├── Core/
 │   │   ├── Src/
-│   │   │   ├── main.c           # System init, clock config, I2S + USB init
-│   │   │   ├── audio_i2s.c      # I2S DMA consumer (ring → stereo frames)
-│   │   │   ├── ring_buffer.c    # Lock-free SPSC ring buffer
-│   │   │   └── stm32f4xx_it.c   # Interrupt handlers + HAL callbacks
+│   │   │   ├── main.c             # System init, clock config, I2S + USB init
+│   │   │   ├── audio_i2s.c        # I2S DMA consumer (ring → stereo frames)
+│   │   │   ├── ring_buffer.c      # Lock-free SPSC ring buffer
+│   │   │   └── stm32f4xx_it.c     # Interrupt handlers + HAL callbacks
 │   │   └── Inc/
-│   │       ├── audio_i2s.h      # Buffer sizing, refill API
-│   │       └── ring_buffer.h    # Ring buffer struct and API
+│   │       ├── audio_i2s.h        # Buffer sizing, refill API
+│   │       └── ring_buffer.h      # Ring buffer struct and API
 │   ├── USB_DEVICE/
 │   │   ├── App/
-│   │   │   ├── usbd_audio_if.c  # USB audio → ring buffer bridge
-│   │   │   └── usbd_desc.c      # USB device/configuration descriptors
+│   │   │   ├── usbd_audio_if.c    # USB audio → ring buffer bridge
+│   │   │   └── usbd_desc.c        # USB device/configuration descriptors
 │   │   └── Target/
-│   │       ├── usbd_conf.c      # HAL PCD init, VBUS sensing disabled
-│   │       └── usbd_conf.h      # USBD_AUDIO_FREQ = 44100
-│   ├── Drivers/                 # ST HAL + CMSIS (vendored)
-│   ├── Middlewares/              # ST USB Device Library (Audio class)
-│   ├── Makefile                 # GCC cross-compilation
-│   ├── STM32F411xx_FLASH.ld    # Linker script (512K flash, 128K RAM)
-│   └── USB_Audio_DAC_1.0.ioc   # CubeMX project file
-├── IMPLEMENTATION_PLAN.md       # Full 8-phase plan with task breakdowns
-├── PROGRESS.md                  # Phase-by-phase working log + debugging stories
-├── BOM.md                       # Bill of materials + pinout reference
-└── CLAUDE.md                    # Project context for AI assistants
+│   │       ├── usbd_conf.c        # HAL PCD init, VBUS sensing disabled
+│   │       └── usbd_conf.h        # USBD_AUDIO_FREQ = 44100
+│   ├── tests/                     # Host-simulated ring-buffer unit tests
+│   ├── Drivers/                   # ST HAL + CMSIS (vendored)
+│   ├── Middlewares/               # ST USB Device Library (Audio class)
+│   ├── Makefile                   # GCC cross-compilation
+│   ├── STM32F411xx_FLASH.ld       # Linker script (512K flash, 128K RAM, 64K CCMRAM)
+│   └── USB_Audio_DAC_1.0.ioc      # CubeMX project file
+├── README.md                      # This file — overview, hardware, build, status
+├── IMPLEMENTATION_PLAN.md         # 8-phase plan with task breakdowns
+├── PROGRESS.md                    # Working log + changelog + debugging stories
+└── AGENTS.md                      # Project context for AI assistants
 ```
 
 ---
@@ -218,10 +201,11 @@ UsbAudioDac/
 | 1 | Clock tree: HSE → PLL → 48 MHz SYSCLK, PLLI2S → 96 MHz I2S | ✅ Complete |
 | 2 | I2S + DMA audio output (1 kHz test tone) | ✅ Complete |
 | 3 | USB Audio Class 1.0 device — PC plays music to speaker | ✅ Complete |
-| 4 | Rotary encoder volume control + hardware DAC volume | ⏳ Planned |
-| 5 | ST7735S TFT audio visualizer + spectrum analyzer | ⏳ Planned |
+| 3.5 | Reliability: CCMRAM + stack bump, host unit tests, IWDG watchdog | ✅ Complete |
+| 4 | Rotary encoder volume (software gain) + mute | ⏳ Planned |
+| 5 | ST7735S TFT audio visualizer + level meter | ⏳ Planned |
 | 6 | FreeRTOS integration (4 tasks: Audio, Display, Encoder, Debug) | ⏳ Planned |
-| 7 | Polish, documentation, README | 🔄 In Progress |
+| 7 | Polish, enclosure, final documentation | ⏳ Planned |
 
 ### Key Debugging Stories
 
@@ -251,8 +235,8 @@ Phase 3 had three silent-failure bugs that each took an evening to track down �
 
 ## Roadmap
 
-- [ ] **Phase 4**: Rotary encoder volume control with DAC-based hardware volume
-- [ ] **Phase 5**: ST7735S TFT real-time audio visualizer with spectrum analysis
+- [ ] **Phase 4**: Rotary encoder volume (software gain in `audio_i2s.c`), mute on button, wire `AUDIO_VolumeCtl_FS`
+- [ ] **Phase 5**: ST7735S TFT real-time audio visualizer (level meter + spectrum bars)
 - [ ] **Phase 6**: FreeRTOS with 4 concurrent tasks + inter-task communication
 - [ ] **Phase 7**: Final polish, enclosure, full documentation
 - [ ] **Stretch**: Stereo audio (2nd MAX98357A), CMSIS-DSP EQ effects, SD card logging, custom KiCad PCB
@@ -267,6 +251,13 @@ Phase 3 had three silent-failure bugs that each took an evening to track down �
 | STM32CubeMX | Peripheral configuration & code generation | Free |
 | `st-flash` | Flash programming via ST-Link V2 | Free |
 | VS Code | Code editor | Free |
+
+## Reference Documents
+
+- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — Full 8-phase plan with task breakdowns
+- [PROGRESS.md](PROGRESS.md) — Phase-by-phase working log + changelog + debugging stories
+- [AGENTS.md](AGENTS.md) — Project context for AI assistants
+- `STM32F411CEU6/` — Datasheet and reference manual PDFs
 
 ---
 
