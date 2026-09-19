@@ -4,6 +4,27 @@ STM32F411 USB Audio Player — block-by-block learning log.
 
 ---
 
+## Changelog
+
+### [Unreleased]
+
+**2026-09-17 — Reliability & test infrastructure (Phase 3.5)**
+
+- **Linker** (`USB_Audio_DAC_1.0/STM32F411xx_FLASH.ld`): declared the 64 KB CCMRAM region (0x10000000) with a `.ccmram` (NOLOAD) section for CPU-only data; bumped `_Min_Stack_Size` from 0x800 to 0x1000.
+- **Tests** (`USB_Audio_DAC_1.0/tests/`): new host-simulated unit suite for the SPSC ring buffer — 8 tests / 5227 assertions, clean under ASan/UBSan. Run with `make -C tests run`. No ARM toolchain needed.
+- **Watchdog**: enabled `HAL_IWDG_MODULE_ENABLED`, linked the IWDG HAL driver, started a windowless IWDG (~1 s) in `main.c`, refreshed each main-loop pass. A stuck main loop now ends in a reset instead of a dead device.
+- **Build**: added `make flash`, `make test`, and `make size` convenience targets to the firmware Makefile.
+- Deferred items resolved: `.ccmram` linker section, stack 0x800 → 0x1000.
+
+### [0.x] — Phases 0-3 (historical)
+
+- Phase 0: toolchain, board bring-up, LED blink.
+- Phase 1: clock tree (HSE 25 MHz → 48 MHz SYSCLK/USB, PLLI2S → 96 MHz I2S).
+- Phase 2: I2S2 + DMA, 1 kHz sine verified on speaker.
+- Phase 3: USB Audio Class 1.0 device — PC streams 44.1 kHz/16-bit audio through the board to the MAX98357A. Three silent-failure bugs chased down and documented below.
+
+---
+
 ## Phase 0 — Toolchain Setup & Board Bring-Up
 
 | Status | Task |
@@ -31,7 +52,7 @@ STM32F411 USB Audio Player — block-by-block learning log.
 
 ---
 
-## Phase 1 — Clock Tree (HSE → PLL → 48 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 48 MHz I2S)
+## Phase 1 — Clock Tree (HSE → PLL → 48 MHz SYSCLK, PLLQ → 48 MHz USB, PLLI2S → 96 MHz I2S)
 
 | Status | Task |
 |--------|------|
@@ -52,9 +73,9 @@ FLASH_LATENCY_1
 
 **Why this configuration works:**
 - **USB audio:** 48 MHz USB clock meets ±0.25% accuracy for Full-Speed enumeration
-- **I2S audio:** PLLI2S at 48 MHz drives I2S2's internal prescaler; together with a Philips-standard 16-bit frame the HAL divider yields the requested 44.1 kHz LRCLK (real ≈ 44.117 kHz, +0.04% error)
+- **I2S audio:** PLLI2S at 96 MHz drives I2S2's internal prescaler; together with a Philips-standard 16-bit frame the HAL divider yields the requested 44.1 kHz LRCLK (real ≈ 44.117 kHz, +0.04% error)
 - **System processing:** 48 MHz CPU is enough headroom for USB packets, audio buffering, and later RTOS tasks. The 60 MHz / 100 MHz designs considered earlier would work too, but 48 MHz keeps the bus dividers simple and the whole system at one frequency
-- **No external I2S_CKIN:** early plan assumed an external 12.288 MHz crystal on PI0. Dropped because (a) PI0 is not brought out on the Black Pill header, and (b) PLLI2S at 48 MHz gives equivalent audio quality for our use case
+- **No external I2S_CKIN:** early plan assumed an external 12.288 MHz crystal on PI0. Dropped because (a) PI0 is not brought out on the Black Pill header, and (b) PLLI2S at 96 MHz gives equivalent audio quality for our use case
 - **Clock separation:** SYSCLK and I2SCLK are derived from independent PLLs, eliminating beat frequencies
 
 **Clock tree math:**
@@ -64,7 +85,7 @@ FLASH_LATENCY_1
 - PLLI2S: `VCO_I2S = (HSE/PLLI2SM) × PLLI2SN = (25/25) × 192 = 192 MHz`
 - `I2SCLK = VCO_I2S / PLLI2SR = 192/2 = 96 MHz`
 
-**Note on earlier external-MCLK plan:** the F411 CEU6 package (UFQFPN48) does not expose PI0/I2S_CKIN, so the external 12.288 MHz crystal approach was abandoned. PLLI2S at 48 MHz gives the audio quality we need without the extra hardware.
+**Note on earlier external-MCLK plan:** the F411 CEU6 package (UFQFPN48) does not expose PI0/I2S_CKIN, so the external 12.288 MHz crystal approach was abandoned. PLLI2S at 96 MHz gives the audio quality we need without the extra hardware.
 
 **Note on earlier 60 MHz SYSCLK plan:** the design phase considered `M=15, N=144, P=4` to get a 60 MHz SYSCLK with the same 48 MHz USB clock. This was simplified to 48 MHz SYSCLK so that AHB and APB1/APB2 all run at the same frequency — fewer dividers, less to debug. The .ioc final config (M=25, N=384, P=DIV8) is what's actually on the board.
 
@@ -88,12 +109,12 @@ FLASH_LATENCY_1
 
 **Final working configuration (CubeMX `.ioc` + `main.c`):**
 - ✅ I2S2: Master TX, Philips standard, 16-bit data, MCLK disabled, CPOL = LOW
-- ✅ I2S2 Audio Frequency: I2S_AUDIOFREQ_44K (real ≈ 44.117 kHz from PLLI2S=48 MHz)
-- ✅ I2S2 Clock Source: I2S_CLOCK_PLL (PLLI2S at 48 MHz)
+- ✅ I2S2 Audio Frequency: I2S_AUDIOFREQ_44K (real ≈ 44.117 kHz from PLLI2S=96 MHz)
+- ✅ I2S2 Clock Source: I2S_CLOCK_PLL (PLLI2S at 96 MHz)
 - ✅ DMA1 Stream 4 for I2S2_TX (DMA channel 0), Circular mode, FIFO enabled, HALFWORD both sides
 - ✅ DMA1_Stream4 IRQ priority 0,0 (NVIC enabled)
 - ✅ HAL_I2S_MspInit is the sole PLLI2S config site (PLLI2SN=192, PLLI2SM=25, PLLI2SR=2) — SystemClock_Config does NOT touch PLLI2S
-- ✅ MAX98357A wired: BCLK←PB10, LRCK/WS←PB12, SD←PB15; SD pin has L/R channel-select strap (see BOM.md)
+- ✅ MAX98357A wired: BCLK←PB10, LRCK/WS←PB12, SD←PB15; SD pin has L/R channel-select strap (see README.md → Hardware)
 
 **Pin note:** `PB13` is not the I2S2 CK pin on the F411 — the alternate-function 5 mapping is **PB10=CK, PB12=WS, PB15=SD**. Earlier plan had `SCK→PB13`; that is wrong for I2S2 and was corrected.
 
@@ -161,7 +182,7 @@ All three bugs caused the device to **enumerate correctly but play no audio**. `
 
 **Bug 2 — Sample-rate mismatch: descriptor said 48 kHz, I2S ran at 44.1 kHz.**
 - Symptom: device enumerated, `snd-usb-audio` registered, but `speaker-test` and `aplay` produced silence
-- Root cause: `usbd_conf.h:78` had a hardcoded `#define USBD_AUDIO_FREQ 48000U`. The CubeMX `.ioc` set `USBD_AUDIO_FREQ=44100`, but the `#define` in `usbd_conf.h` was overriding the .ioc. So the descriptor advertised 48 kHz, `AUDIO_OUT_PACKET` was computed as 96 bytes (48 samples × 2 bytes), and the host sent 96-byte packets. But I2S2 was actually clocked at 44.1 kHz (PLLI2S at 48 MHz / 32-bit frame / 1.412 MHz BCLK → 44.117 kHz LRCLK). The ring was being filled with 48-sample chunks at a 48 kHz cadence, but the consumer pulled 44-sample chunks at a 44.1 kHz cadence → ring overran and underran in a way that read junk → silence.
+- Root cause: `usbd_conf.h:78` had a hardcoded `#define USBD_AUDIO_FREQ 48000U`. The CubeMX `.ioc` set `USBD_AUDIO_FREQ=44100`, but the `#define` in `usbd_conf.h` was overriding the .ioc. So the descriptor advertised 48 kHz, `AUDIO_OUT_PACKET` was computed as 96 bytes (48 samples × 2 bytes), and the host sent 96-byte packets. But I2S2 was actually clocked at 44.1 kHz (PLLI2S at 96 MHz / 32-bit frame / 1.412 MHz BCLK → 44.117 kHz LRCLK). The ring was being filled with 48-sample chunks at a 48 kHz cadence, but the consumer pulled 44-sample chunks at a 44.1 kHz cadence → ring overran and underran in a way that read junk → silence.
 - Fix: change `usbd_conf.h:78` to `#define USBD_AUDIO_FREQ 44100U`. The .ioc and the #define now agree; both the descriptor and the I2S clock are at 44.1 kHz; `AUDIO_OUT_PACKET` is 88 bytes (44 samples × 2); the host sends 88-byte packets; everything lines up.
 - Lesson: ST's USB Audio template hardcodes the sample rate in `usbd_conf.h`. If you change the .ioc's USBD_AUDIO_FREQ, you must also change the `#define` — or better, delete the `#define` and read from the .ioc's setting.
 
