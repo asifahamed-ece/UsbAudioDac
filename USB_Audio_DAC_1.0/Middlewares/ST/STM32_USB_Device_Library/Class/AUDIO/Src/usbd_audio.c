@@ -708,10 +708,30 @@ void USBD_AUDIO_Sync(USBD_HandleTypeDef *pdev, AUDIO_OffsetTypeDef offset)
       (haudio->offset == AUDIO_OFFSET_FULL))
   {
     /* Pass old_rd_ptr as offset — that's where the fresh data lives
-     * in the circular buffer. The callback reads from buffer[offset]. */
+     * in the circular buffer. The callback reads from buffer[offset].
+     *
+     * If the read crosses the end of the circular buffer, split into
+     * two calls to prevent reading past buffer[] into the struct's
+     * offset/rd_ptr/wr_ptr fields (which would produce clicks and
+     * harmonic artifacts). */
+    uint32_t first_chunk = AUDIO_TOTAL_BUF_SIZE - (uint32_t)old_rd_ptr;
+    if (first_chunk > BufferSize)
+    {
+      first_chunk = BufferSize;
+    }
+    uint32_t second_chunk = BufferSize - first_chunk;
+
     ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData[pdev->classId])->AudioCmd(&haudio->buffer[0],
-                                                                         BufferSize, AUDIO_CMD_PLAY,
+                                                                         (uint32_t)first_chunk,
+                                                                         AUDIO_CMD_PLAY,
                                                                          (uint32_t)old_rd_ptr);
+    if (second_chunk > 0U)
+    {
+      ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData[pdev->classId])->AudioCmd(&haudio->buffer[0],
+                                                                           (uint32_t)second_chunk,
+                                                                           AUDIO_CMD_PLAY,
+                                                                           0U);
+    }
     haudio->offset = AUDIO_OFFSET_NONE;
   }
 }
