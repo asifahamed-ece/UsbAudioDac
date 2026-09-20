@@ -117,7 +117,7 @@ extern USBD_HandleTypeDef hUsbDeviceFS;
 
 static int8_t AUDIO_Init_FS(uint32_t AudioFreq, uint32_t Volume, uint32_t options);
 static int8_t AUDIO_DeInit_FS(uint32_t options);
-static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd);
+static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd, uint32_t offset);
 static int8_t AUDIO_VolumeCtl_FS(uint8_t vol);
 static int8_t AUDIO_MuteCtl_FS(uint8_t cmd);
 static int8_t AUDIO_PeriodicTC_FS(uint8_t *pbuf, uint32_t size, uint8_t cmd);
@@ -180,7 +180,7 @@ static int8_t AUDIO_DeInit_FS(uint32_t options)
   * @param  cmd: Command opcode
   * @retval USBD_OK if all operations are OK else USBD_FAIL
   */
-static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd)
+static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd, uint32_t offset)
 {
   /* USER CODE BEGIN 2 */
   switch(cmd)
@@ -196,14 +196,16 @@ static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd)
        * into our ring. The I2S consumer pulls samples out at 44.1 kHz,
        * keeping the ring ~50% full.
        *
-       * Cap the transfer to RING_BUFFER_SIZE - 1 to prevent overflow.
-       * BufferSize from USBD_AUDIO_Sync can be up to 3520 bytes (1760
-       * samples) but the ring only holds 1024 samples. */
+       * 'offset' is the byte offset into pbuf where fresh data starts
+       * (the haudio->buffer circular buffer read pointer). 'size' is the
+       * number of fresh bytes available at that offset. We cap the
+       * transfer to RING_BUFFER_SIZE - 1 to prevent overflow. */
       {
+        const int16_t *src = (const int16_t *)(pbuf + offset);
         uint16_t total_samples = size / sizeof(int16_t);
         uint16_t max_samples   = RING_BUFFER_SIZE - 1U;
         uint16_t to_write      = (total_samples < max_samples) ? total_samples : max_samples;
-        RingBuffer_Write((const int16_t *)pbuf, to_write);
+        RingBuffer_Write(src, to_write);
       }
       break;
   }

@@ -66,7 +66,7 @@ EndBSPDependencies */
 
 static int8_t  TEMPLATE_Init(uint32_t  AudioFreq, uint32_t Volume, uint32_t options);
 static int8_t  TEMPLATE_DeInit(uint32_t options);
-static int8_t  TEMPLATE_AudioCmd(uint8_t *pbuf, uint32_t size, uint8_t cmd);
+static int8_t  TEMPLATE_AudioCmd(uint8_t *pbuf, uint32_t size, uint8_t cmd, uint32_t offset);
 static int8_t  TEMPLATE_VolumeCtl(uint8_t vol);
 static int8_t  TEMPLATE_MuteCtl(uint8_t cmd);
 static int8_t  TEMPLATE_PeriodicTC(uint8_t *pbuf, uint32_t size, uint8_t cmd);
@@ -128,11 +128,12 @@ static int8_t TEMPLATE_DeInit(uint32_t options)
   * @param  cmd: command opcode
   * @retval Result of the operation: USBD_OK if all operations are OK else USBD_FAIL
   */
-static int8_t TEMPLATE_AudioCmd(uint8_t *pbuf, uint32_t size, uint8_t cmd)
+static int8_t TEMPLATE_AudioCmd(uint8_t *pbuf, uint32_t size, uint8_t cmd, uint32_t offset)
 {
   UNUSED(pbuf);
   UNUSED(size);
   UNUSED(cmd);
+  UNUSED(offset);
 
   return (0);
 }
