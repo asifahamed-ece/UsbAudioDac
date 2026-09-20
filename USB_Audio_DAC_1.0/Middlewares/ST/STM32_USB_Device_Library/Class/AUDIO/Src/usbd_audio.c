@@ -660,7 +660,8 @@ static uint8_t USBD_AUDIO_SOF(USBD_HandleTypeDef *pdev)
 void USBD_AUDIO_Sync(USBD_HandleTypeDef *pdev, AUDIO_OffsetTypeDef offset)
 {
   USBD_AUDIO_HandleTypeDef *haudio;
-  uint32_t BufferSize = AUDIO_TOTAL_BUF_SIZE / 2U;
+  uint32_t BufferSize;
+  uint16_t old_rd_ptr;
 
   if (pdev->pClassDataCmsit[pdev->classId] == NULL)
   {
@@ -671,51 +672,46 @@ void USBD_AUDIO_Sync(USBD_HandleTypeDef *pdev, AUDIO_OffsetTypeDef offset)
 
   haudio->offset = offset;
 
+  /* Compute actual fresh bytes available in the circular buffer.
+   * This is the forward distance from rd_ptr to wr_ptr. */
+  if (haudio->wr_ptr >= haudio->rd_ptr)
+  {
+    BufferSize = haudio->wr_ptr - haudio->rd_ptr;
+  }
+  else
+  {
+    BufferSize = AUDIO_TOTAL_BUF_SIZE - haudio->rd_ptr + haudio->wr_ptr;
+  }
+
+  /* Clamp to half-buffer max — don't transfer more than one DMA
+   * sub-buffer worth of data per sync event. */
+  if (BufferSize > (AUDIO_TOTAL_BUF_SIZE / 2U))
+  {
+    BufferSize = AUDIO_TOTAL_BUF_SIZE / 2U;
+  }
+
+  /* Save old read pointer (where fresh data starts) before advancing. */
+  old_rd_ptr = haudio->rd_ptr;
+
+  /* Advance rd_ptr by the amount we are about to copy. */
   if (haudio->rd_enable == 1U)
   {
     haudio->rd_ptr += (uint16_t)BufferSize;
 
-    if (haudio->rd_ptr == AUDIO_TOTAL_BUF_SIZE)
+    if (haudio->rd_ptr >= AUDIO_TOTAL_BUF_SIZE)
     {
-      /* roll back */
-      haudio->rd_ptr = 0U;
-    }
-  }
-
-  if (haudio->rd_ptr > haudio->wr_ptr)
-  {
-    if ((haudio->rd_ptr - haudio->wr_ptr) < AUDIO_OUT_PACKET)
-    {
-      BufferSize += 4U;
-    }
-    else
-    {
-      if ((haudio->rd_ptr - haudio->wr_ptr) > (AUDIO_TOTAL_BUF_SIZE - AUDIO_OUT_PACKET))
-      {
-        BufferSize -= 4U;
-      }
-    }
-  }
-  else
-  {
-    if ((haudio->wr_ptr - haudio->rd_ptr) < AUDIO_OUT_PACKET)
-    {
-      BufferSize -= 4U;
-    }
-    else
-    {
-      if ((haudio->wr_ptr - haudio->rd_ptr) > (AUDIO_TOTAL_BUF_SIZE - AUDIO_OUT_PACKET))
-      {
-        BufferSize += 4U;
-      }
+      haudio->rd_ptr -= (uint16_t)AUDIO_TOTAL_BUF_SIZE;
     }
   }
 
   if ((haudio->offset == AUDIO_OFFSET_HALF) ||
       (haudio->offset == AUDIO_OFFSET_FULL))
   {
+    /* Pass old_rd_ptr as offset — that's where the fresh data lives
+     * in the circular buffer. The callback reads from buffer[offset]. */
     ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData[pdev->classId])->AudioCmd(&haudio->buffer[0],
-                                                                         BufferSize, AUDIO_CMD_PLAY);
+                                                                         BufferSize, AUDIO_CMD_PLAY,
+                                                                         (uint32_t)old_rd_ptr);
     haudio->offset = AUDIO_OFFSET_NONE;
   }
 }
@@ -803,8 +799,8 @@ static uint8_t USBD_AUDIO_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
       if (haudio->offset == AUDIO_OFFSET_UNKNOWN)
       {
         ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData[pdev->classId])->AudioCmd(&haudio->buffer[0],
-                                                                            AUDIO_TOTAL_BUF_SIZE / 2U,
-                                                                            AUDIO_CMD_START);
+                                                                             AUDIO_TOTAL_BUF_SIZE / 2U,
+                                                                             AUDIO_CMD_START, 0U);
         haudio->offset = AUDIO_OFFSET_NONE;
       }
     }
