@@ -125,6 +125,12 @@ C_DEFS =  \
 -DUSE_HAL_DRIVER \
 -DSTM32F411xE
 
+# DEBUG build: -DDEBUG=1 adds DEBUG_NO_WATCHDOG so SWD halt does not
+# trip the IWDG ~1 s after stopping the main loop.
+ifeq ($(DEBUG),1)
+C_DEFS += -DDEBUG_NO_WATCHDOG
+endif
+
 
 # AS includes
 AS_INCLUDES = 
