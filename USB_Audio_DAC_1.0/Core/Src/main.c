@@ -120,7 +120,13 @@ int main(void)
 
   /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
    * reload 500  ->  ~1.0 s timeout. Refresh happens in the main
-   * loop; a hang ends in an IWDG reset instead of a dead device. */
+   * loop; a hang ends in an IWDG reset instead of a dead device.
+   *
+   * NOTE: IWDG keeps counting while the CPU is halted, so with the
+   * watchdog enabled a debugger cannot halt the core (it resets
+   * ~1 s later). Build with -DDEBUG_NO_WATCHDOG to disable it for
+   * SWD debugging. */
+#if !defined(DEBUG_NO_WATCHDOG)
   hiwdg.Instance = IWDG;
   hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
   hiwdg.Init.Reload = 500;
@@ -128,13 +134,16 @@ int main(void)
   {
     Error_Handler();
   }
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+#if !defined(DEBUG_NO_WATCHDOG)
     HAL_IWDG_Refresh(&hiwdg);
+#endif
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

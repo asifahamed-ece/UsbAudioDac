@@ -711,10 +711,11 @@ void USBD_AUDIO_Sync(USBD_HandleTypeDef *pdev, AUDIO_OffsetTypeDef offset)
     }
   }
 
-  if (haudio->offset == AUDIO_OFFSET_FULL)
+  if ((haudio->offset == AUDIO_OFFSET_HALF) ||
+      (haudio->offset == AUDIO_OFFSET_FULL))
   {
     ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData[pdev->classId])->AudioCmd(&haudio->buffer[0],
-                                                                        BufferSize, AUDIO_CMD_PLAY);
+                                                                         BufferSize, AUDIO_CMD_PLAY);
     haudio->offset = AUDIO_OFFSET_NONE;
   }
 }

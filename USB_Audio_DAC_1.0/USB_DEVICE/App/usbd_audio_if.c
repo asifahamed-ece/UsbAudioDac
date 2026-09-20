@@ -192,10 +192,19 @@ static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd)
       break;
 
     case AUDIO_CMD_PLAY:
-      /* Producer side: copy one packet (88 bytes = 44 mono samples at 44.1 kHz)
-       * from the USB OUT buffer into our ring. The I2S consumer pulls
-       * samples out at the same 44.1 kHz rate, keeping the ring ~50% full. */
-      RingBuffer_Write((const int16_t *)pbuf, size / sizeof(int16_t));
+      /* Producer side: copy audio data from the USB intermediate buffer
+       * into our ring. The I2S consumer pulls samples out at 44.1 kHz,
+       * keeping the ring ~50% full.
+       *
+       * Cap the transfer to RING_BUFFER_SIZE - 1 to prevent overflow.
+       * BufferSize from USBD_AUDIO_Sync can be up to 3520 bytes (1760
+       * samples) but the ring only holds 1024 samples. */
+      {
+        uint16_t total_samples = size / sizeof(int16_t);
+        uint16_t max_samples   = RING_BUFFER_SIZE - 1U;
+        uint16_t to_write      = (total_samples < max_samples) ? total_samples : max_samples;
+        RingBuffer_Write((const int16_t *)pbuf, to_write);
+      }
       break;
   }
   return (USBD_OK);
