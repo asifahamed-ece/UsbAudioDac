@@ -62,6 +62,7 @@ EndBSPDependencies */
 /* Includes ------------------------------------------------------------------*/
 #include "usbd_audio.h"
 #include "usbd_ctlreq.h"
+#include "ring_buffer.h"     /* RingBuffer_Space: lossless backpressure in Sync */
 
 
 /** @addtogroup STM32_USB_DEVICE_LIBRARY
@@ -688,6 +689,19 @@ void USBD_AUDIO_Sync(USBD_HandleTypeDef *pdev, AUDIO_OffsetTypeDef offset)
   if (BufferSize > (AUDIO_TOTAL_BUF_SIZE / 2U))
   {
     BufferSize = AUDIO_TOTAL_BUF_SIZE / 2U;
+  }
+
+  /* Zero-loss backpressure: only consume what the consumer ring can
+   * accept this sync.  Previously Sync advanced rd_ptr past data the
+   * PLAY callback dropped on a full ring (silent loss -> cadence
+   * glitches / buzz).  RingBuffer_Space()*2 = free bytes for mono.
+   * This runs in the same I2S DMA ISR as the consumer, so no locking. */
+  {
+    uint32_t ring_free_bytes = (uint32_t)RingBuffer_Space() * 2U;
+    if (BufferSize > ring_free_bytes)
+    {
+      BufferSize = ring_free_bytes;
+    }
   }
 
   /* Save old read pointer (where fresh data starts) before advancing. */
