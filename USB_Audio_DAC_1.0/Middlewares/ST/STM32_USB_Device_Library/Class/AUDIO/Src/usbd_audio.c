@@ -301,7 +301,8 @@ __ALIGN_BEGIN static uint8_t USBD_AUDIO_CfgDesc[USB_AUDIO_CONFIG_DESC_SIZ] __ALI
   USB_DESC_TYPE_ENDPOINT,               /* bDescriptorType */
   AUDIO_OUT_EP,                         /* bEndpointAddress 1 out endpoint */
   USBD_EP_TYPE_ISOC,                    /* bmAttributes */
-  AUDIO_PACKET_SZE(USBD_AUDIO_FREQ),    /* wMaxPacketSize in Bytes (Freq(Samples)*2(Stereo)*2(HalfWord)) */
+  LOBYTE(AUDIO_OUT_PACKET_MAX),         /* wMaxPacketSize (mono) = 90 bytes */
+  HIBYTE(AUDIO_OUT_PACKET_MAX),
   AUDIO_FS_BINTERVAL,                   /* bInterval */
   0x00,                                 /* bRefresh */
   0x00,                                 /* bSynchAddress */
@@ -382,7 +383,7 @@ static uint8_t USBD_AUDIO_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   }
 
   /* Open EP OUT */
-  (void)USBD_LL_OpenEP(pdev, AUDIOOutEpAdd, USBD_EP_TYPE_ISOC, AUDIO_OUT_PACKET);
+  (void)USBD_LL_OpenEP(pdev, AUDIOOutEpAdd, USBD_EP_TYPE_ISOC, AUDIO_OUT_PACKET_MAX);
   pdev->ep_out[AUDIOOutEpAdd & 0xFU].is_used = 1U;
 
   haudio->alt_setting = 0U;
@@ -401,7 +402,7 @@ static uint8_t USBD_AUDIO_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
 
   /* Prepare Out endpoint to receive 1st packet */
   (void)USBD_LL_PrepareReceive(pdev, AUDIOOutEpAdd, haudio->buffer,
-                               AUDIO_OUT_PACKET);
+                               AUDIO_OUT_PACKET_MAX);
 
   return (uint8_t)USBD_OK;
 }
@@ -785,7 +786,7 @@ static uint8_t USBD_AUDIO_IsoOutIncomplete(USBD_HandleTypeDef *pdev, uint8_t epn
   /* Prepare Out endpoint to receive next audio packet */
   (void)USBD_LL_PrepareReceive(pdev, epnum,
                                &haudio->buffer[haudio->wr_ptr],
-                               AUDIO_OUT_PACKET);
+                               AUDIO_OUT_PACKET_MAX);
 
   return (uint8_t)USBD_OK;
 }
@@ -841,7 +842,7 @@ static uint8_t USBD_AUDIO_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
     if (haudio->rd_enable == 0U)
     {
-      if (haudio->wr_ptr == (AUDIO_TOTAL_BUF_SIZE / 2U))
+      if (haudio->wr_ptr >= (AUDIO_TOTAL_BUF_SIZE / 2U))
       {
         haudio->rd_enable = 1U;
       }
@@ -850,7 +851,7 @@ static uint8_t USBD_AUDIO_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
     /* Prepare Out endpoint to receive next audio packet */
     (void)USBD_LL_PrepareReceive(pdev, AUDIOOutEpAdd,
                                  &haudio->buffer[haudio->wr_ptr],
-                                 AUDIO_OUT_PACKET);
+                                 AUDIO_OUT_PACKET_MAX);
   }
 
   return (uint8_t)USBD_OK;
