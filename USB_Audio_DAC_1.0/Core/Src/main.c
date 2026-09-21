@@ -244,7 +244,10 @@ static void MX_DMA_Init(void)
   __HAL_RCC_DMA1_CLK_ENABLE();
 
   /* DMA interrupt init */
-  /* DMA1_Stream4_IRQn interrupt configuration */
+  /* DMA1_Stream4_IRQn interrupt configuration
+   * Priority 0 (highest): audio DMA callbacks are time-critical.
+   * They must complete within ~5ms to refill the I2S buffer before
+   * the DMA reads stale data. USB (priority 3) can tolerate latency. */
   HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream4_IRQn);
 

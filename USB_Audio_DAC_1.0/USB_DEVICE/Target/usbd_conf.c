@@ -96,8 +96,10 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     /* Peripheral clock enable */
     __HAL_RCC_USB_OTG_FS_CLK_ENABLE();
 
-    /* Peripheral interrupt init */
-    HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
+    /* Peripheral interrupt init
+     * Priority 3: USB can tolerate latency. Audio DMA (priority 0)
+     * is more time-critical and must not be preempted. */
+    HAL_NVIC_SetPriority(OTG_FS_IRQn, 3, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
 
