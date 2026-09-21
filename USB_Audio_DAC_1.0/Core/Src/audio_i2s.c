@@ -39,9 +39,9 @@ extern void Error_Handler(void);
 int16_t audio_i2s_buffer[AUDIO_I2S_BUFFER_SIZE] = {0};
 
 /* How many mono samples fit in one I2S half-buffer.
- * Half = 441 int16 = 220 stereo frames = 220 mono samples. */
+ * Half = 440 int16 = 220 stereo frames = 220 mono samples. */
 #define I2S_HALF_MONO_COUNT  (AUDIO_I2S_BUFFER_SIZE / 2 / 2)   /* 220 */
-#define I2S_HALF_BYTES       (I2S_HALF_MONO_COUNT * 2 * sizeof(int16_t))  /* 882 */
+#define I2S_HALF_BYTES       (I2S_HALF_MONO_COUNT * 2 * sizeof(int16_t))  /* 880 */
 
 /* Scratch for pulling mono samples from the ring before duplicating
  * them into L+R. 220 int16 = 220 mono samples = 5 ms of audio at
@@ -122,11 +122,12 @@ void AudioI2S_RefillHalfA(void)
      * the silence persists. The memset also catches any partial
      * fill correctly (the unfilled tail stays zero).
      *
-     * The cast to size_t is to silence GCC's -Wmemset-elt-size
-     * warning: it sees I2S_HALF_BYTES == sizeof(buffer)/2 and
-     * suspects we meant "fill half the elements" instead of
-     * "fill half the BYTES." We're filling bytes, so cast. */
-    memset(audio_i2s_buffer, 0, (size_t)I2S_HALF_BYTES);
+     * The byte count (I2S_HALF_BYTES) equals the element count, so GCC's
+     * -Wmemset-elt-size warns; we ARE filling bytes, so suppress it. */
+    _Pragma("GCC diagnostic push")
+    _Pragma("GCC diagnostic ignored \"-Wmemset-elt-size\"")
+    memset((uint8_t *)audio_i2s_buffer, 0, (size_t)I2S_HALF_BYTES);
+    _Pragma("GCC diagnostic pop")
 
     /* Step 2: pull up to I2S_HALF_MONO_COUNT mono samples from the ring. */
     uint16_t n = RingBuffer_Read(mono_scratch, I2S_HALF_MONO_COUNT);
@@ -147,18 +148,20 @@ void AudioI2S_RefillHalfA(void)
 }
 
 /* Refill the second half. Identical to HalfA but writes start
- * at index 441 (the 222nd stereo frame). */
+ * at index 440 (the 221st stereo frame). */
 void AudioI2S_RefillHalfB(void)
 {
-    /* Zero the second half. Cast to size_t to silence the same
-     * GCC warning as above. */
-    memset(&audio_i2s_buffer[I2S_HALF_MONO_COUNT * 2], 0, (size_t)I2S_HALF_BYTES);
+    /* Zero the second half. Suppress -Wmemset-elt-size (byte count == element count). */
+    _Pragma("GCC diagnostic push")
+    _Pragma("GCC diagnostic ignored \"-Wmemset-elt-size\"")
+    memset((uint8_t *)&audio_i2s_buffer[I2S_HALF_MONO_COUNT * 2], 0, (size_t)I2S_HALF_BYTES);
+    _Pragma("GCC diagnostic pop")
 
     uint16_t n = RingBuffer_Read(mono_scratch, I2S_HALF_MONO_COUNT);
     dbg_track_refill(n);
 
-    /* Write into the second half: i2s_buf[441 + 2i] and [441 + 2i + 1]. */
-    uint16_t base = I2S_HALF_MONO_COUNT * 2;   /* 441 */
+    /* Write into the second half: i2s_buf[440 + 2i] and [440 + 2i + 1]. */
+    uint16_t base = I2S_HALF_MONO_COUNT * 2;   /* 440 */
     for (uint16_t i = 0; i < n; i++) {
         audio_i2s_buffer[base + 2 * i]     = mono_scratch[i];
         audio_i2s_buffer[base + 2 * i + 1] = mono_scratch[i];
@@ -174,7 +177,7 @@ void AudioI2S_Init(void)
      * audio_i2s_buffer and will ping-pong through it, calling our
      * RefillHalfA / RefillHalfB at each half boundary.
      *
-     * The size is in 16-bit elements (882 = 441 stereo frames = 10 ms). */
+     * The size is in 16-bit elements (880 = 440 stereo frames = 10 ms). */
     if (HAL_I2S_Transmit_DMA(&hi2s2, (uint16_t *)audio_i2s_buffer,
                              AUDIO_I2S_BUFFER_SIZE) != HAL_OK) {
         Error_Handler();

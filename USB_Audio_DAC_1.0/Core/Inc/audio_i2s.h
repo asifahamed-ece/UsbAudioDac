@@ -12,13 +12,19 @@
  * the second half. So one full buffer = two callbacks = 2× the
  * half-period.
  *
- * AUDIO_I2S_BUFFER_SIZE = 882 int16 = 441 stereo frames = 10 ms @ 44.1 kHz.
- * Half = 441 int16 = 220 stereo frames = 5 ms ≈ 5 USB packets of mono.
+ * AUDIO_I2S_BUFFER_SIZE = 880 int16 = 440 stereo frames = 10 ms @ 44.1 kHz.
+ * Half = 440 int16 = 220 stereo frames = 5 ms ≈ 5 USB packets of mono.
  *
- * We pick 10 ms so that the ring (which holds 23 ms) has plenty
+ * MUST be a multiple of 4 so the DMA half (size/2) is an even number of
+ * halfwords = a whole number of stereo frames.  882 produced a 441-word
+ * half that split a stereo frame at every 5 ms boundary -> a 200 Hz/100 Hz
+ * glitch (confirmed by recording analysis).  880 -> half = 440 words =
+ * exactly 220 frames, aligned with the 220-mono refill.
+ *
+ * We pick 10 ms so that the ring (which holds 46 ms) has plenty
  * of headroom even if a refill is delayed by an interrupt.
  */
-#define AUDIO_I2S_BUFFER_SIZE 882
+#define AUDIO_I2S_BUFFER_SIZE 880
 
 /* MEMORY-PLACEMENT RULE
  * -------------------
@@ -43,7 +49,7 @@ void AudioI2S_Init(void);
  * stays zeroed — silence instead of held DC. */
 void AudioI2S_RefillHalfA(void);
 
-/* Refill the second half (samples 441..881). Same contract as
+/* Refill the second half (samples 440..879). Same contract as
  * HalfA but writes to the upper half of the buffer. */
 void AudioI2S_RefillHalfB(void);
 
