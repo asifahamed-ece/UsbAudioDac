@@ -53,6 +53,66 @@ int16_t audio_i2s_buffer[AUDIO_I2S_BUFFER_SIZE] = {0};
  * duplication in a second pass over a small scratch array. */
 static int16_t mono_scratch[220];
 
+/* ============================================================================
+ * STEP DIAG NSTRUMENTATION (temporary, non-behavioral) — confirm the ~100 Hz
+ * artifact source in the consumer path. Read via SWD/GDB while a 1 kHz tone
+ * chatters:
+ *   - dbg_partial_count rising at ~200/s (5 ms halves) => consumer starvation
+ *     (short fills); dbg_partial_short is total missing mono samples.
+ *   - dbg_late_gap / dbg_max_gap_ms >0 => a refill callback came late (>6 ms),
+ *     so the DMA replayed a partially-refilled half (latency/jitter).
+ *   - If BOTH stay ~0 the artifact is not starvation or cadence -> look at
+ *     wrap/alignment next.  events/sec = count / (seconds of playback).
+ * Remove after the root cause is fixed.
+ * ==========================================================================*/
+volatile uint32_t dbg_refill_calls;    /* total HalfA+HalfB refills performed  */
+volatile uint32_t dbg_partial_count;   /* refills that got < 220 mono samples  */
+volatile uint32_t dbg_partial_short;   /* total missing mono samples (deficit) */
+volatile uint32_t dbg_late_gap;        /* refill gaps > 6 ms (missed a window) */
+volatile uint32_t dbg_max_gap_ms;      /* largest inter-refill gap observed    */
+volatile uint16_t dbg_min_read;        /* smallest mono read this run          */
+static   uint32_t dbg_prev_tick = 0U;
+
+static inline void dbg_track_refill(uint16_t n)
+{
+    uint32_t now = HAL_GetTick();
+
+    dbg_refill_calls++;
+
+    /* Detect a late/missed callback: two refills are normally ~5 ms apart.
+     * A gap > 6 ms means the DMA likely replayed past a half that was not
+     * (or not yet) refilled. */
+    if (dbg_refill_calls > 1U)
+    {
+        int32_t gap = (int32_t)(now - dbg_prev_tick);
+        if (gap > 6)
+        {
+            dbg_late_gap++;
+            if ((uint32_t)gap > dbg_max_gap_ms)
+            {
+                dbg_max_gap_ms = (uint32_t)gap;
+            }
+        }
+    }
+    dbg_prev_tick = now;
+
+    if (dbg_min_read == 0U)
+    {
+        dbg_min_read = I2S_HALF_MONO_COUNT;
+    }
+    if (n < dbg_min_read)
+    {
+        dbg_min_read = n;
+    }
+
+    /* Short fill = consumer starved for this half-buffer. */
+    if (n < I2S_HALF_MONO_COUNT)
+    {
+        dbg_partial_count++;
+        dbg_partial_short += (uint32_t)(I2S_HALF_MONO_COUNT - n);
+    }
+}
+
 /* Refill the first half of audio_i2s_buffer with samples from the
  * ring. Called every ~5 ms when the DMA finishes the first half. */
 void AudioI2S_RefillHalfA(void)
@@ -70,6 +130,7 @@ void AudioI2S_RefillHalfA(void)
 
     /* Step 2: pull up to I2S_HALF_MONO_COUNT mono samples from the ring. */
     uint16_t n = RingBuffer_Read(mono_scratch, I2S_HALF_MONO_COUNT);
+    dbg_track_refill(n);
 
     /* Step 3: duplicate each mono sample into L+R slots of the
      * I2S buffer's first half. mono_scratch[0] -> [L,R], [1] -> [L,R], ...
@@ -94,6 +155,7 @@ void AudioI2S_RefillHalfB(void)
     memset(&audio_i2s_buffer[I2S_HALF_MONO_COUNT * 2], 0, (size_t)I2S_HALF_BYTES);
 
     uint16_t n = RingBuffer_Read(mono_scratch, I2S_HALF_MONO_COUNT);
+    dbg_track_refill(n);
 
     /* Write into the second half: i2s_buf[441 + 2i] and [441 + 2i + 1]. */
     uint16_t base = I2S_HALF_MONO_COUNT * 2;   /* 441 */
