@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "audio_i2s.h"
 #include "audio_fft.h"
+#include "visualizer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -123,6 +124,11 @@ int main(void)
    * I2S refill ISR can call AudioFFT_PutSamples(). */
   AudioFFT_Init();
 
+  /* TFT visualizer: ST7735 SPI bring-up + splash. Must run BEFORE
+   * the IWDG starts — the splash uses HAL_Delay ~1 s, which would
+   * trip a ~1 s watchdog mid-animation and reset the MCU. */
+  Visualizer_Init();
+
   /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
    * reload 500  ->  ~1.0 s timeout. Refresh happens in the main
    * loop; a hang ends in an IWDG reset instead of a dead device.
@@ -152,6 +158,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    Visualizer_Update();
   }
   /* USER CODE END 3 */
 }
