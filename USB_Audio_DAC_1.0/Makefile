@@ -43,6 +43,7 @@ Core/Src/ring_buffer.c \
 Core/Src/audio_i2s.c \
 Core/Src/st7735.c \
 Core/Src/audio_fft.c \
+Core/Src/visualizer.c \
 Drivers/CMSIS/DSP/Source/TransformFunctions/TransformFunctions.c \
 Drivers/CMSIS/DSP/Source/ComplexMathFunctions/ComplexMathFunctions.c \
 Drivers/CMSIS/DSP/Source/CommonTables/CommonTables.c \
