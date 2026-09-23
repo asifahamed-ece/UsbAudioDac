@@ -42,17 +42,17 @@
 #define AUDIO_FFT_PI        3.14159265358979323846f
 #define AUDIO_FFT_PEAK_EPS  1.0e-6f
 
-#define CCM __attribute__((section(".ccmram")))
+/* ISR double-buffer + main-loop FFT scratch.
+ * Note: STM32F411 has NO CCMRAM (only F405/407/429 do). Buffers live in
+ * normal SRAM .bss. The memsets in AudioFFT_Init still zero them. */
+static int16_t tap_buf[2][AUDIO_FFT_N];
+static float   hann_window[AUDIO_FFT_N];
+static float   fft_in[AUDIO_FFT_N];
+static float   fft_out[AUDIO_FFT_N];
+static float   mag[AUDIO_FFT_N / 2U];
+static float   band_current[AUDIO_FFT_BANDS];
 
-/* ISR double-buffer + main-loop FFT scratch (CPU-only → CCMRAM). */
-static int16_t tap_buf[2][AUDIO_FFT_N] CCM;
-static float   hann_window[AUDIO_FFT_N] CCM;
-static float   fft_in[AUDIO_FFT_N] CCM;
-static float   fft_out[AUDIO_FFT_N] CCM;
-static float   mag[AUDIO_FFT_N / 2U] CCM;
-static float   band_current[AUDIO_FFT_BANDS] CCM;
-
-static arm_rfft_fast_instance_f32 rfft_instance CCM;
+static arm_rfft_fast_instance_f32 rfft_instance;
 
 /* Handoff flags: written by ISR and/or main, never both for the same
  * role — volatile so the main loop cannot cache a stale frame_ready. */
@@ -76,7 +76,8 @@ void AudioFFT_Init(void)
     frame_ready  = 0U;
     fill_count   = 0U;
 
-    /* CCMRAM is not cleared by the C runtime — zero explicitly. */
+    /* Zero all FFT buffers explicitly (belt-and-suspenders; .bss is cleared
+     * by startup, but explicit zeroing documents the initialization contract). */
     memset(tap_buf, 0, sizeof(tap_buf));
     memset(band_current, 0, sizeof(band_current));
     memset(fft_in, 0, sizeof(fft_in));
