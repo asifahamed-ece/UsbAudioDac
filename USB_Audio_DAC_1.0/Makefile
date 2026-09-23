@@ -41,6 +41,8 @@ Core/Src/stm32f4xx_it.c \
 Core/Src/stm32f4xx_hal_msp.c \
 Core/Src/ring_buffer.c \
 Core/Src/audio_i2s.c \
+Core/Src/st7735.c \
+Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2s.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2s_ex.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_iwdg.c \
@@ -123,7 +125,8 @@ AS_DEFS =
 # C defines
 C_DEFS =  \
 -DUSE_HAL_DRIVER \
--DSTM32F411xE
+-DSTM32F411xE \
+-DHAL_SPI_MODULE_ENABLED
 
 # DEBUG build: -DDEBUG=1 adds DEBUG_NO_WATCHDOG so SWD halt does not
 # trip the IWDG ~1 s after stopping the main loop.
