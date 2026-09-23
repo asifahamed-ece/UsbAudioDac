@@ -42,6 +42,12 @@ Core/Src/stm32f4xx_hal_msp.c \
 Core/Src/ring_buffer.c \
 Core/Src/audio_i2s.c \
 Core/Src/st7735.c \
+Core/Src/audio_fft.c \
+Drivers/CMSIS/DSP/Source/TransformFunctions/TransformFunctions.c \
+Drivers/CMSIS/DSP/Source/ComplexMathFunctions/ComplexMathFunctions.c \
+Drivers/CMSIS/DSP/Source/CommonTables/CommonTables.c \
+Drivers/CMSIS/DSP/Source/FastMathFunctions/FastMathFunctions.c \
+Drivers/CMSIS/DSP/Source/BasicMathFunctions/BasicMathFunctions.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_spi.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2s.c \
 Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_i2s_ex.c \
@@ -148,7 +154,8 @@ C_INCLUDES =  \
 -IUSB_DEVICE/App \
 -IUSB_DEVICE/Target \
 -IMiddlewares/ST/STM32_USB_Device_Library/Core/Inc \
--IMiddlewares/ST/STM32_USB_Device_Library/Class/AUDIO/Inc
+-IMiddlewares/ST/STM32_USB_Device_Library/Class/AUDIO/Inc \
+-IDrivers/CMSIS/DSP/Include
 
 
 # compile gcc flags
