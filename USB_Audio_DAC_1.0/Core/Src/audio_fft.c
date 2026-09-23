@@ -23,6 +23,13 @@
  *   startup does not clear it. None of these buffers are DMA-reachable.
  *
  *   PutSamples is an integer O(n) tap only: no float, no FFT.
+ *
+ * MAPPING
+ * -------
+ *   Per-frame peak normalization: magnitudes are divided by the frame's
+ *   peak bin before the dB map, so Hann leakage stays a fixed number of
+ *   dB below the tone at any absolute level (full-scale vs quiet). A
+ *   linear dB window of AUDIO_FFT_DB_RANGE maps [−RANGE, 0] dB → [0, 90].
  */
 
 #include "audio_fft.h"
@@ -30,10 +37,10 @@
 #include <math.h>
 #include <string.h>
 
-#define AUDIO_FFT_FS_HZ   44100.0f
-#define AUDIO_FFT_DB_K    22.0f
-#define AUDIO_FFT_DECAY   0.78f
-#define AUDIO_FFT_PI      3.14159265358979323846f
+#define AUDIO_FFT_DB_RANGE  60.0f
+#define AUDIO_FFT_DECAY     0.78f
+#define AUDIO_FFT_PI        3.14159265358979323846f
+#define AUDIO_FFT_PEAK_EPS  1.0e-6f
 
 #define CCM __attribute__((section(".ccmram")))
 
@@ -83,6 +90,7 @@ void AudioFFT_Init(void)
                                               (float)(AUDIO_FFT_N - 1U)));
     }
 
+    /* N=256 is a supported RFFT size; init cannot fail for this build. */
     (void)arm_rfft_fast_init_f32(&rfft_instance, (uint16_t)AUDIO_FFT_N);
 }
 
@@ -118,6 +126,7 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
         const int16_t *frame = tap_buf[1U - write_idx];
         uint32_t i;
         uint8_t  b;
+        float    peak;
 
         for (i = 0U; i < (uint32_t)AUDIO_FFT_N; i++) {
             fft_in[i] = (float)frame[i] * hann_window[i];
@@ -126,20 +135,38 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
         arm_rfft_fast_f32(&rfft_instance, fft_in, fft_out, 0U);
         arm_cmplx_mag_f32(fft_out, mag, (uint32_t)(AUDIO_FFT_N / 2U));
 
+        /* Peak of non-DC bins — scale reference for this frame. */
+        peak = 0.0f;
+        for (i = 1U; i < (uint32_t)(AUDIO_FFT_N / 2U); i++) {
+            if (mag[i] > peak) {
+                peak = mag[i];
+            }
+        }
+
         for (b = 0U; b < (uint8_t)AUDIO_FFT_BANDS; b++) {
             uint16_t lo  = band_start[b];
             uint16_t hi  = band_start[b + 1U];
             uint16_t k;
             float    sum    = 0.0f;
             float    avg;
-            float    target;
+            float    target = 0.0f;
 
             for (k = lo; k < hi; k++) {
                 sum += mag[k];
             }
             avg = sum / (float)(hi - lo);
 
-            target = AUDIO_FFT_DB_K * log10f(avg + 1.0f);
+            if (peak > AUDIO_FFT_PEAK_EPS) {
+                float ratio = avg / peak;
+                if (ratio >= 1.0e-10f) {
+                    /* ≤ 0 dB; map [−RANGE, 0] → [0, MAX_HEIGHT]. */
+                    float db = 20.0f * log10f(ratio);
+                    target = (db + AUDIO_FFT_DB_RANGE) *
+                             ((float)AUDIO_FFT_MAX_HEIGHT /
+                              AUDIO_FFT_DB_RANGE);
+                }
+            }
+
             if (target < 0.0f) {
                 target = 0.0f;
             }

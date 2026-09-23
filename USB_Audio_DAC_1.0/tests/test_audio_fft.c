@@ -29,10 +29,9 @@ static int checks   = 0;
         }                                                           \
     } while (0)
 
-/* Full-scale Hann leakage puts ~79 into band 0 at K=22, which would
- * fail the band0<20 assertion. A modest amplitude keeps far-out bins
- * under the threshold while band 5 still exceeds 40. */
-#define SINE_AMP   50
+/* Full-scale: exercises peak-normalized mapping (leakage floor must
+ * not rise with absolute level). band5 ≥ 60, band0 < 30. */
+#define SINE_AMP   32767
 #define SINE_HZ    1000.0f
 #define SAMPLE_RATE 44100.0f
 #define PI_F       3.14159265358979323846f
@@ -42,7 +41,14 @@ static void fill_sine(int16_t *buf, int16_t amp, float hz)
     int n;
     for (n = 0; n < AUDIO_FFT_N; n++) {
         float t = 2.0f * PI_F * hz * (float)n / SAMPLE_RATE;
-        buf[n] = (int16_t)((float)amp * sinf(t));
+        float v = (float)amp * sinf(t);
+        if (v > 32767.0f) {
+            v = 32767.0f;
+        }
+        if (v < -32768.0f) {
+            v = -32768.0f;
+        }
+        buf[n] = (int16_t)v;
     }
 }
 
@@ -61,10 +67,10 @@ static void test_1khz_sine_maps_to_band5(void)
     AudioFFT_Process(bands);
     CHECK(AudioFFT_FrameReady() == 0);
 
-    /* 1 kHz falls in band 5 (900 Hz–1.2 kHz). */
-    CHECK(bands[5] > 40);
-    /* Band 0 (60–180 Hz) must stay quiet. */
-    CHECK(bands[0] < 20);
+    /* 1 kHz falls in band 5 (900 Hz–1.2 kHz) — full-scale tone. */
+    CHECK(bands[5] >= 60);
+    /* Band 0 (60–180 Hz) must stay quiet despite Hann leakage. */
+    CHECK(bands[0] < 30);
 
     printf("  bands:");
     for (b = 0; b < AUDIO_FFT_BANDS; b++)
@@ -98,7 +104,8 @@ static void test_partial_fill_not_ready(void)
     CHECK(AudioFFT_FrameReady() == 0);
     AudioFFT_PutSamples(samples, 64);
     CHECK(AudioFFT_FrameReady() == 0);
-    /* Process with no frame must not invent energy. */
+    /* Contract: Process only when FrameReady==1. Calling anyway must
+     * not invent energy (defensive: band_current still zero from Init). */
     AudioFFT_Process(bands);
     {
         int b;
