@@ -53,7 +53,7 @@ int16_t audio_i2s_buffer[AUDIO_I2S_BUFFER_SIZE] = {0};
  * reflash.  Default is 1 so the isolation test runs right after flashing.
  * DELETE this block after the test.
  * ==========================================================================*/
-volatile uint8_t dbg_bypass_usb = 1U;
+volatile uint8_t dbg_bypass_usb = 0U;
 #define GEN_FREQ_HZ    1000.0f
 #define GEN_SR         44100.0f
 #define GEN_AMP        9000
