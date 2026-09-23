@@ -52,8 +52,6 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 
 ### ST7735S TFT Pinout (SPI)
 
-**⚠️ 3.3 V only — do NOT connect the display to 5 V.**
-
 | Display Pin | Function | STM32F411 Pin |
 |-------------|----------|---------------|
 | VCC / GND | Power | 3V3 / GND |
