@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "audio_i2s.h"
+#include "audio_fft.h"
+#include "visualizer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -93,7 +95,13 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* Spectrum visualizer: arm the FFT double-buffer BEFORE
+   * AudioI2S_Init() starts circular DMA — otherwise the refill ISR
+   * (DMA1_Stream4, priority 0) could call AudioFFT_PutSamples()
+   * while Init clears flags / memset(tap_buf) / builds the Hann
+   * window. AudioFFT_Init has no I2S/USB dependency (RFFT table,
+   * window, flags only). */
+  AudioFFT_Init();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -117,6 +125,12 @@ int main(void)
   /* (Phase 2 1 kHz sine generation removed; the I2S DMA now
    * streams from audio_i2s_buffer, which is refilled from the
    * USB ring buffer.) */
+
+  /* TFT visualizer: ST7735 SPI bring-up + splash. Runs AFTER USB
+   * enumeration (host expects <100 ms to MX_USB_DEVICE_Init) but
+   * BEFORE IWDG starts — the splash uses HAL_Delay ~1 s, which
+   * would trip a ~1 s watchdog mid-animation and reset the MCU. */
+  Visualizer_Init();
 
   /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
    * reload 500  ->  ~1.0 s timeout. Refresh happens in the main
@@ -147,6 +161,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    Visualizer_Update();
   }
   /* USER CODE END 3 */
 }
