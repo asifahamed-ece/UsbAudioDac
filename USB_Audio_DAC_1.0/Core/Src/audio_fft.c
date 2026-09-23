@@ -83,6 +83,12 @@ void AudioFFT_Init(void)
     memset(fft_out, 0, sizeof(fft_out));
     memset(mag, 0, sizeof(mag));
 
+    /* Defensive re-clear: if a PutSamples ISR ever raced Init (it
+     * must not — main.c arms FFT before AudioI2S_Init), fill_count
+     * could desync from the memset above. Belt-and-suspenders. */
+    fill_count = 0U;
+    frame_ready = 0U;
+
     /* Symmetric Hann window (runtime-generated: avoids a 1 KB flash table). */
     for (n = 0U; n < (uint32_t)AUDIO_FFT_N; n++) {
         hann_window[n] = 0.5f * (1.0f - cosf(2.0f * AUDIO_FFT_PI *

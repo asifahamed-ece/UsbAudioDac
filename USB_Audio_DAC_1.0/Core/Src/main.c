@@ -95,7 +95,13 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* Spectrum visualizer: arm the FFT double-buffer BEFORE
+   * AudioI2S_Init() starts circular DMA — otherwise the refill ISR
+   * (DMA1_Stream4, priority 0) could call AudioFFT_PutSamples()
+   * while Init clears flags / memset(tap_buf) / builds the Hann
+   * window. AudioFFT_Init has no I2S/USB dependency (RFFT table,
+   * window, flags only). */
+  AudioFFT_Init();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -119,10 +125,6 @@ int main(void)
   /* (Phase 2 1 kHz sine generation removed; the I2S DMA now
    * streams from audio_i2s_buffer, which is refilled from the
    * USB ring buffer.) */
-
-  /* Spectrum visualizer: arm the FFT double-buffer before any
-   * I2S refill ISR can call AudioFFT_PutSamples(). */
-  AudioFFT_Init();
 
   /* TFT visualizer: ST7735 SPI bring-up + splash. Must run BEFORE
    * the IWDG starts — the splash uses HAL_Delay ~1 s, which would

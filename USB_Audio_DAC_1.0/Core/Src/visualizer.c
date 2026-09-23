@@ -9,11 +9,8 @@
 #include <stdint.h>
 
 /* Layout (spec §4.1) */
-#define HEADER_H        19      /* Y 0..18 */
 #define SEP_Y           19
 #define BARS_TOP        20      /* first pixel row of bar area */
-#define BARS_BOTTOM     118     /* last pixel row of bar area */
-#define BAR_AREA_H      (BARS_BOTTOM - BARS_TOP + 1)  /* 99 -> use 90 max height */
 #define BASELINE_Y      119
 #define BAR_W           6
 #define BAR_GAP         1
@@ -130,6 +127,10 @@ void Visualizer_Update(void)
         uint8_t old_peak = peak_h[i];
         uint8_t new_h = bands[i];
 
+        if (new_h > AUDIO_FFT_MAX_HEIGHT) {
+            new_h = AUDIO_FFT_MAX_HEIGHT;
+        }
+
         /* Peak-hold ballistics */
         if (new_h > peak_h[i]) {
             peak_h[i] = new_h;
@@ -139,6 +140,15 @@ void Visualizer_Update(void)
         } else if (peak_h[i] > new_h) {
             uint8_t drop = (uint8_t)(peak_h[i] - new_h);
             peak_h[i] = (uint8_t)(peak_h[i] - ((drop < 2U) ? drop : 2U));
+        }
+        if (peak_h[i] > AUDIO_FFT_MAX_HEIGHT) {
+            peak_h[i] = AUDIO_FFT_MAX_HEIGHT;
+        }
+        if (old_h > AUDIO_FFT_MAX_HEIGHT) {
+            old_h = AUDIO_FFT_MAX_HEIGHT;
+        }
+        if (old_peak > AUDIO_FFT_MAX_HEIGHT) {
+            old_peak = AUDIO_FFT_MAX_HEIGHT;
         }
 
         /* Differential render of bar */
