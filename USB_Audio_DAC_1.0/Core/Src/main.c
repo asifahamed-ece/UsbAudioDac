@@ -126,10 +126,9 @@ int main(void)
    * streams from audio_i2s_buffer, which is refilled from the
    * USB ring buffer.) */
 
-  /* TFT visualizer: ST7735 SPI bring-up + splash. Runs AFTER USB
-   * enumeration (host expects <100 ms to MX_USB_DEVICE_Init) but
-   * BEFORE IWDG starts — the splash uses HAL_Delay ~1 s, which
-   * would trip a ~1 s watchdog mid-animation and reset the MCU. */
+  /* TFT visualizer: ST7735 SPI bring-up + splash. Must run BEFORE
+   * the IWDG starts — the splash uses HAL_Delay ~1 s, which would
+   * trip a ~1 s watchdog mid-animation and reset the MCU. */
   Visualizer_Init();
 
   /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
