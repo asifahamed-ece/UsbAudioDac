@@ -8,6 +8,21 @@ STM32F411 USB Audio Player — block-by-block learning log.
 
 ### [Unreleased]
 
+**2026-09-23 — USB Audio stability, buffer overrun fix & TFT visualizer**
+
+- **USB Audio Circular Buffer Overrun & Screeching Fix** (`usbd_audio.h`, `usbd_audio.c`):
+  - Fixed root cause of screeching and device disconnect/reset during playback. `AUDIO_OUT_PACKET_MAX` was 90 bytes (for 44.1 kHz fractional frames) while the ring buffer was sized at `88 * 80 = 7040` bytes. The HAL received up to 90 bytes linearly into `&buffer[wr_ptr]`, spilling up to 16 bytes past array bounds into `USBD_AUDIO_HandleTypeDef` struct fields (`rd_ptr`, `wr_ptr`, `control`).
+  - Added `AUDIO_OUT_PACKET_MAX` spill pad to `haudio->buffer` (`7040 + 90` bytes). Static allocation pool auto-scaled via `sizeof`.
+  - Implemented true modulo wrap (`wr_ptr -= AUDIO_TOTAL_BUF_SIZE`) in `USBD_AUDIO_DataOut` instead of snap-to-zero, preventing sample loss on straddled frames.
+  - Cleared EP0 control state (`cmd`, `len`, `unit`) unconditionally on all `SET_CUR` requests in `USBD_AUDIO_EP0_RxReady`.
+  - Clamped `rd_ptr` in `USBD_AUDIO_Sync` to guarantee bounds safety.
+- **STM32F411 Memory Architecture Correction**:
+  - Removed invalid `.ccmram` section placements from `audio_fft.c`. STM32F411 has contiguous 128 KB SRAM at `0x20000000` (no CCMRAM at `0x10000000` like F405/F407). Attempted access to `0x10000000` caused an immediate BusFault / HardFault.
+- **Build & Watchdog Enhancements**:
+  - Added `make release` (`DEBUG=0 OPT=-O2`) target to `Makefile` with active IWDG, while keeping `DEBUG_NO_WATCHDOG` for debug sessions.
+- **ST7735S TFT Spectrum Visualizer (Phase 5)**:
+  - 16-band log-spaced FFT spectrum analyzer (CMSIS-DSP RFFT 256) running smoothly. Fixed ST7735 SPI DMA init sequence so USB enumeration is not blocked.
+
 **2026-09-17 — Reliability & test infrastructure (Phase 3.5)**
 
 - **Linker** (`USB_Audio_DAC_1.0/STM32F411xx_FLASH.ld`): declared the 64 KB CCMRAM region (0x10000000) with a `.ccmram` (NOLOAD) section for CPU-only data; bumped `_Min_Stack_Size` from 0x800 to 0x1000.
@@ -257,7 +272,10 @@ contract violations cheaply, long before the ISA side would.
 
 | Status | Task |
 |--------|------|
-| ⏳ | Not started |
+| ✅ | ST7735S driver over SPI DMA / GPIO |
+| ✅ | CMSIS-DSP RFFT 256 + Hann window + 16 log-spaced frequency bands |
+| ✅ | Display rendering (framebuffer bar chart + peak hold) |
+| ✅ | USB enumeration timing fix (init visualizer after USB connect) |
 
 **Goal:** Live audio level + spectrum bars on the TFT.
 
@@ -287,10 +305,12 @@ contract violations cheaply, long before the ISA side would.
 
 | Status | Item | Notes |
 |--------|------|-------|
-| ✅ 2026-09-17 | Add `.ccmram` section to `STM32F411xx_FLASH.ld` | Done — reviewer flagged that the 64 KB CCMRAM at 0x10000000 was undeclared. Now declared via `.ccmram` (NOLOAD). Still NOT to be used for audio/DMA buffers (CCMRAM is CPU-only). Ready for the Phase 5 FFT scratch. |
+| ⚠️ Corrected 2026-09-23 | `.ccmram` in linker script | Corrected — STM32F411 has no CCMRAM (0x10000000 causes BusFault). All data safely allocated in standard 128 KB SRAM (0x20000000). |
 | ✅ 2026-09-17 | Bump stack 0x800 → 0x1000 | Done — makes room for `printf` (Phase 4 debug logs) and FreeRTOS (Phase 6). |
 | ⏳ | Wire `AUDIO_VolumeCtl_FS` | Currently a no-op. Phase 4 connects the rotary encoder to this hook. |
-| ⏳ | 10-min playback stress test | Phase 3 acceptance test deferred. `speaker-test` for a few seconds and a short `aplay` were verified; need a long-duration run (no dropouts, no ring over/underruns, USB stays enumerated) before declaring Phase 3 production-ready. |
+| ⏳ | Sample rate drift compensation | I2S2 clock is ~44.1176 kHz vs USB 44.1000 kHz (-17.6 samples/s drift). Eventual ring underrun after ~2-5 min continuous stream without sample duplication/feedback endpoint. |
+| ⏳ | STM32H743VIT6 Hardware Migration (Optional) | If dual clock domains / fractional PLL / SAI or internal DAC are desired, migrate to STM32H743VIT6 board. |
+| ⏳ | 10-min playback stress test | Phase 3 acceptance test deferred. |
 
 ---
 
