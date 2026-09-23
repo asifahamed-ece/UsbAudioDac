@@ -10,7 +10,8 @@ Embedded firmware for STM32F411CEU6 Black Pill USB Audio Class 1.0 device. Audio
 
 ```bash
 cd USB_Audio_DAC_1.0
-make                    # Build (arm-none-eabi-gcc)
+make                    # Build debug (arm-none-eabi-gcc, -Og, -DDEBUG_NO_WATCHDOG)
+make release            # Build release (-O2, watchdog enabled)
 make test               # Host-simulated ring-buffer unit tests (host gcc, no ARM toolchain)
 make size               # Per-section memory usage
 make flash              # st-flash write build/USB_Audio_DAC_1.0.bin 0x08000000
@@ -28,11 +29,13 @@ make clean              # Clean
 
 ## Critical Debugging Gotchas
 
-These caused silent failures (device enumerates but no audio):
+These caused silent failures (device enumerates but no audio) or crashes/screeching:
 
 1. **VBUS sensing** — Black Pill's PA9/VBUS line unreliable. Must set `vbus_sensing_enable = DISABLE` in `USB_DEVICE/Target/usbd_conf.c:342`.
 2. **Sample rate mismatch** — `USBD_AUDIO_FREQ` in `usbd_conf.h` must equal the `.ioc` value (44100). Hardcoded 48000U causes ring over/underrun → silence.
 3. **Missing `USBD_AUDIO_Sync` call** — ST library exports this but never calls it. Must invoke from I2S DMA callbacks in `Core/Src/stm32f4xx_it.c`. Order: (1) `HalfTransfer_CallBack_FS()`/`TransferComplete_CallBack_FS()`, then (2) `AudioI2S_RefillHalfA/B()`.
+4. **USB Audio OUT buffer spill pad & modulo wrap** — 44.1 kHz USB packets oscillate between 88 and 90 bytes (`AUDIO_OUT_PACKET_MAX = 90U`). The HAL linearly writes up to 90 bytes into `haudio->buffer[wr_ptr]`. Without `+ AUDIO_OUT_PACKET_MAX` padding at the end of `buffer[]`, writes near the logical end (`AUDIO_TOTAL_BUF_SIZE = 7040`) corrupt the struct's `rd_ptr`/`wr_ptr`/`control` fields, causing loud screeching and hard faults. Additionally, `wr_ptr` must wrap modulo (`wr_ptr -= AUDIO_TOTAL_BUF_SIZE`) instead of snapping to 0.
+5. **No CCMRAM on STM32F411** — Unlike F405/F407, STM32F411 has no CCMRAM at `0x10000000`. Accessing this address immediately generates a BusFault/HardFault. All SRAM must reside in standard SRAM at `0x20000000`.
 
 ## I2S Pins & Clocks
 
