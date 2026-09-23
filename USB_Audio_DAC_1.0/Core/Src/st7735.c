@@ -18,8 +18,9 @@
  * Clock: SYSCLK 48 MHz -> APB2 48 MHz (DIV1) -> SPI1 prescaler /4
  * = 12 MHz SCK (ST7735S max 18 MHz).
  *
- * RGB565 on the wire is big-endian (high byte first); STM32 is
- * little-endian, so every 16-bit pixel is byte-swapped before TX.
+ * RGB565 on the wire is big-endian (high byte first). Pack every
+ * pixel as [color >> 8, color & 0xFF] — never pre-swap the value
+ * (a double-swap would put the low byte first).
  */
 
 #include "st7735.h"
@@ -151,10 +152,13 @@ static const uint8_t font6x8[95][6] = {
     {0x08, 0x08, 0x2A, 0x1C, 0x08, 0x00}, /* 126 '~' */
 };
 
-/* Byte-swap RGB565 for big-endian SPI wire order. */
-static inline uint16_t swap(uint16_t color)
+/* RGB565 is transmitted high-byte-first on the wire. STM32 is
+ * little-endian, so pack explicitly: buf[0] = color >> 8 (high),
+ * buf[1] = color & 0xFF (low). Never pre-swap the value. */
+static void pack_be(uint16_t color, uint8_t *hi_lo)
 {
-    return (uint16_t)((color << 8) | (color >> 8));
+    hi_lo[0] = (uint8_t)(color >> 8);
+    hi_lo[1] = (uint8_t)(color & 0xFFU);
 }
 
 static void ST7735_WriteCommand(uint8_t cmd)
@@ -285,7 +289,9 @@ void ST7735_Init(void)
 
     ST7735_WriteCommand(ST7735_INVON);  /* ST7735S 1.44" typically needs inversion */
     ST7735_WriteCommand(ST7735_NORON);
+    HAL_Delay(10U);  /* normal mode settle */
     ST7735_WriteCommand(ST7735_DISPON);
+    HAL_Delay(100U); /* display on settle */
 
     ST7735_FillScreen(0x0000U); /* black boot screen */
 }
@@ -293,9 +299,9 @@ void ST7735_Init(void)
 void ST7735_FillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color)
 {
     uint8_t buf[ST7735_CHUNK_BYTES];
+    uint8_t px[2];
     uint32_t total;
     uint32_t i;
-    uint16_t be = swap(color);
 
     if ((w <= 0) || (h <= 0))
     {
@@ -305,10 +311,11 @@ void ST7735_FillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color)
     SetAddressWindow(x, y, (int16_t)(x + w - 1), (int16_t)(y + h - 1));
 
     /* Pre-fill chunk with big-endian color (32 pixels per 64-byte push). */
+    pack_be(color, px);
     for (i = 0U; i < (ST7735_CHUNK_BYTES / 2U); i++)
     {
-        buf[2U * i]     = (uint8_t)(be >> 8);
-        buf[2U * i + 1U] = (uint8_t)(be & 0xFFU);
+        buf[2U * i]      = px[0];
+        buf[2U * i + 1U] = px[1];
     }
 
     total = (uint32_t)w * (uint32_t)h;
@@ -334,19 +341,16 @@ void ST7735_FillScreen(uint16_t color)
 
 void ST7735_DrawPixel(int16_t x, int16_t y, uint16_t color)
 {
+    uint8_t px[2];
+
     if ((x < 0) || (y < 0) || (x >= ST7735_WIDTH) || (y >= ST7735_HEIGHT))
     {
         return;
     }
 
     SetAddressWindow(x, y, x, y);
-    {
-        uint8_t px[2];
-        uint16_t be = swap(color);
-        px[0] = (uint8_t)(be >> 8);
-        px[1] = (uint8_t)(be & 0xFFU);
-        ST7735_WriteData(px, 2U);
-    }
+    pack_be(color, px);
+    ST7735_WriteData(px, 2U);
 }
 
 void ST7735_DrawHLine(int16_t x, int16_t y, int16_t w, uint16_t color)
@@ -362,6 +366,7 @@ void ST7735_DrawVLine(int16_t x, int16_t y, int16_t h, uint16_t color)
 void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
 {
     int16_t cx = x;
+    uint8_t buf[6 * 8 * 2]; /* one glyph: 48 pixels, BE-packed */
 
     if (str == NULL)
     {
@@ -372,6 +377,9 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
     {
         unsigned char c = (unsigned char)*str++;
         const uint8_t *glyph;
+        int16_t x0, y0, x1, y1;
+        int16_t col, row;
+        uint32_t n = 0U;
 
         if (c < 32U || c > 126U)
         {
@@ -379,15 +387,31 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
         }
         glyph = font6x8[c - 32U];
 
-        /* Each glyph is 6 px wide, 8 px tall; draw via pixel ops. */
-        for (int16_t col = 0; col < 6; col++)
+        /* Visible sub-rectangle of this 6x8 glyph (clip to screen). */
+        x0 = (cx < 0) ? 0 : cx;
+        y0 = (y  < 0) ? 0 : y;
+        x1 = (int16_t)(cx + 5);
+        y1 = (int16_t)(y + 7);
+        if (x1 > ST7735_WIDTH - 1)  { x1 = ST7735_WIDTH - 1; }
+        if (y1 > ST7735_HEIGHT - 1) { y1 = ST7735_HEIGHT - 1; }
+
+        if ((x0 <= x1) && (y0 <= y1))
         {
-            uint8_t bits = glyph[col];
-            for (int16_t row = 0; row < 8; row++)
+            /* One address window per character; stream only visible pixels
+             * so the byte count always matches the window size. */
+            SetAddressWindow(x0, y0, x1, y1);
+
+            for (col = x0; col <= x1; col++)
             {
-                uint16_t color = ((bits >> row) & 0x01U) ? fg : bg;
-                ST7735_DrawPixel((int16_t)(cx + col), (int16_t)(y + row), color);
+                uint8_t bits = glyph[col - cx];
+                for (row = y0; row <= y1; row++)
+                {
+                    uint16_t color = ((bits >> (row - y)) & 0x01U) ? fg : bg;
+                    pack_be(color, &buf[n]);
+                    n += 2U;
+                }
             }
+            ST7735_WriteData(buf, (uint16_t)n);
         }
         cx = (int16_t)(cx + 6);
     }
