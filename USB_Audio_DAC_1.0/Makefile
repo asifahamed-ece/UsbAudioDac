@@ -230,11 +230,18 @@ clean:
 #######################################
 # convenience targets
 #######################################
-.PHONY: all clean flash test size
+.PHONY: all clean flash test size release
 
 # Flash the built binary via ST-Link (needs st-flash on PATH).
 flash: $(BUILD_DIR)/$(TARGET).bin
 	st-flash write $< 0x08000000
+
+# Release build: optimise + IWDG enabled (no DEBUG_NO_WATCHDOG).
+# Use for flashing production firmware; MCU will auto-reset on any fault.
+#   make release          — build only
+#   make release flash    — build then flash
+release:
+	$(MAKE) DEBUG=0 OPT=-O2 all
 
 # Run host-simulated unit tests (tests/ dir, host gcc).
 test:

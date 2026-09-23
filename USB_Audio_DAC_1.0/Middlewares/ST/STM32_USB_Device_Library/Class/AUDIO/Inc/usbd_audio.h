@@ -156,7 +156,17 @@ typedef struct
 typedef struct
 {
   uint32_t alt_setting;
-  uint8_t buffer[AUDIO_TOTAL_BUF_SIZE];
+  /* buffer[] is the USB isochronous OUT circular buffer (logical size
+   * AUDIO_TOTAL_BUF_SIZE = 7040 bytes).  The extra AUDIO_OUT_PACKET_MAX
+   * bytes after the logical end are a spill pad: the HAL copies each
+   * received packet linearly to &buffer[wr_ptr] before DataOut sees the
+   * rollback, so a 90-byte long frame armed at wr_ptr=6951..7039 would
+   * write past the array and clobber the struct fields below.  The pad
+   * absorbs the overshoot (worst copy end = 7039+90 = 7129 <= 7130).
+   * All circular logic still wraps at AUDIO_TOTAL_BUF_SIZE; the pad
+   * bytes are never consumed by Sync or Refill.
+   * The static malloc pool is sizeof-derived, so it grows automatically. */
+  uint8_t buffer[AUDIO_TOTAL_BUF_SIZE + AUDIO_OUT_PACKET_MAX];
   AUDIO_OffsetTypeDef offset;
   uint8_t rd_enable;
   uint16_t rd_ptr;

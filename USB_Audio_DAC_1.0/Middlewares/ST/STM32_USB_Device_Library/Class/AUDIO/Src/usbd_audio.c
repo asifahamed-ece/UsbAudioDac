@@ -614,14 +614,16 @@ static uint8_t USBD_AUDIO_EP0_RxReady(USBD_HandleTypeDef *pdev)
 
   if (haudio->control.cmd == AUDIO_REQ_SET_CUR)
   {
-    /* In this driver, to simplify code, only SET_CUR request is managed */
-
     if (haudio->control.unit == AUDIO_OUT_STREAMING_CTRL)
     {
       ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData[pdev->classId])->MuteCtl(haudio->control.data[0]);
-      haudio->control.cmd = 0U;
-      haudio->control.len = 0U;
     }
+    /* Always clear cmd/len regardless of unit — leaving them non-zero
+     * after a volume SET_CUR would cause the next control transfer to
+     * re-enter this branch with stale data, corrupting EP0 sequencing. */
+    haudio->control.cmd  = 0U;
+    haudio->control.len  = 0U;
+    haudio->control.unit = 0U;
   }
 
   return (uint8_t)USBD_OK;
@@ -703,6 +705,15 @@ void USBD_AUDIO_Sync(USBD_HandleTypeDef *pdev, AUDIO_OffsetTypeDef offset)
     {
       BufferSize = ring_free_bytes;
     }
+  }
+
+  /* Belt-and-suspenders: clamp rd_ptr before use.  In normal operation
+   * rd_ptr is always < AUDIO_TOTAL_BUF_SIZE; if a previous firmware bug
+   * (e.g. the now-fixed buffer overrun) left a corrupt value, this stops
+   * the out-of-bounds AudioCmd read that would follow. */
+  if (haudio->rd_ptr >= (uint16_t)AUDIO_TOTAL_BUF_SIZE)
+  {
+    haudio->rd_ptr = 0U;
   }
 
   /* Save old read pointer (where fresh data starts) before advancing. */
@@ -828,8 +839,12 @@ static uint8_t USBD_AUDIO_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
     if (haudio->wr_ptr >= AUDIO_TOTAL_BUF_SIZE)
     {
-      /* All buffers are full: roll back */
-      haudio->wr_ptr = 0U;
+      /* True modulo wrap (not snap-to-zero): preserve the byte remainder
+       * so the straddled long frame's tail stays in the spill pad and is
+       * fetched by Sync's two-chunk read.  Snap-to-zero was losing up to
+       * 89 bytes per wrap and leaving wr_ptr pointing into mid-packet
+       * territory on the next cycle. */
+      haudio->wr_ptr -= (uint16_t)AUDIO_TOTAL_BUF_SIZE;
 
       if (haudio->offset == AUDIO_OFFSET_UNKNOWN)
       {
