@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "audio_i2s.h"
+#include "audio_fft.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -117,6 +118,10 @@ int main(void)
   /* (Phase 2 1 kHz sine generation removed; the I2S DMA now
    * streams from audio_i2s_buffer, which is refilled from the
    * USB ring buffer.) */
+
+  /* Spectrum visualizer: arm the FFT double-buffer before any
+   * I2S refill ISR can call AudioFFT_PutSamples(). */
+  AudioFFT_Init();
 
   /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
    * reload 500  ->  ~1.0 s timeout. Refresh happens in the main

@@ -25,6 +25,7 @@
 
 #include "audio_i2s.h"
 #include "ring_buffer.h"
+#include "audio_fft.h"
 #include "stm32f4xx_hal.h"   /* I2S_HandleTypeDef */
 #include <string.h>
 #include <math.h>            /* sinf in the acoustic-isolation diagnostic */
@@ -58,6 +59,20 @@ volatile uint8_t dbg_bypass_usb = 1U;
 #define GEN_AMP        9000
 static uint32_t gen_phase = 0U;
 
+/* Scratch for pulling mono samples from the ring before duplicating
+ * them into L+R. 220 int16 = 220 mono samples = 5 ms of audio at
+ * 44.1 kHz = exactly one half of the I2S buffer's worth.
+ *
+ * Why a scratch instead of writing directly into the I2S buffer:
+ * RingBuffer_Read writes samples contiguously (mono), but the I2S
+ * buffer needs them duplicated (L, R, L, R, ...). Easier to do the
+ * duplication in a second pass over a small scratch array.
+ *
+ * Declared above audioi2s_fill_generated so the bypass diagnostic
+ * can also stage mono samples here for the FFT tap (in bypass mode
+ * RingBuffer_Read is never called, so the scratch is free). */
+static int16_t mono_scratch[220];
+
 static void audioi2s_fill_generated(uint16_t mono_count, uint16_t stereo_dst)
 {
     for (uint16_t i = 0U; i < mono_count; i++)
@@ -68,6 +83,7 @@ static void audioi2s_fill_generated(uint16_t mono_count, uint16_t stereo_dst)
         int16_t v = (int16_t)((float)GEN_AMP * sinf(t));
         audio_i2s_buffer[stereo_dst + 2U * i]      = v;   /* L */
         audio_i2s_buffer[stereo_dst + 2U * i + 1U] = v;   /* R */
+        mono_scratch[i] = v;                               /* FFT tap staging */
     }
     gen_phase += mono_count;
 }
@@ -76,16 +92,6 @@ static void audioi2s_fill_generated(uint16_t mono_count, uint16_t stereo_dst)
  * Half = 440 int16 = 220 stereo frames = 220 mono samples. */
 #define I2S_HALF_MONO_COUNT  (AUDIO_I2S_BUFFER_SIZE / 2 / 2)   /* 220 */
 #define I2S_HALF_BYTES       (I2S_HALF_MONO_COUNT * 2 * sizeof(int16_t))  /* 880 */
-
-/* Scratch for pulling mono samples from the ring before duplicating
- * them into L+R. 220 int16 = 220 mono samples = 5 ms of audio at
- * 44.1 kHz = exactly one half of the I2S buffer's worth.
- *
- * Why a scratch instead of writing directly into the I2S buffer:
- * RingBuffer_Read writes samples contiguously (mono), but the I2S
- * buffer needs them duplicated (L, R, L, R, ...). Easier to do the
- * duplication in a second pass over a small scratch array. */
-static int16_t mono_scratch[220];
 
 /* ============================================================================
  * STEP DIAG NSTRUMENTATION (temporary, non-behavioral) — confirm the ~100 Hz
@@ -155,6 +161,7 @@ void AudioI2S_RefillHalfA(void)
     if (dbg_bypass_usb)
     {
         audioi2s_fill_generated(I2S_HALF_MONO_COUNT, 0U);
+        AudioFFT_PutSamples(mono_scratch, I2S_HALF_MONO_COUNT);
         return;
     }
     /* Step 1: zero the first half. This is the "underrun = silence"
@@ -172,6 +179,9 @@ void AudioI2S_RefillHalfA(void)
     /* Step 2: pull up to I2S_HALF_MONO_COUNT mono samples from the ring. */
     uint16_t n = RingBuffer_Read(mono_scratch, I2S_HALF_MONO_COUNT);
     dbg_track_refill(n);
+
+    /* Feed the spectrum visualizer before the L+R duplication pass. */
+    AudioFFT_PutSamples(mono_scratch, n);
 
     /* Step 3: duplicate each mono sample into L+R slots of the
      * I2S buffer's first half. mono_scratch[0] -> [L,R], [1] -> [L,R], ...
@@ -195,6 +205,7 @@ void AudioI2S_RefillHalfB(void)
     if (dbg_bypass_usb)
     {
         audioi2s_fill_generated(I2S_HALF_MONO_COUNT, I2S_HALF_MONO_COUNT * 2U);
+        AudioFFT_PutSamples(mono_scratch, I2S_HALF_MONO_COUNT);
         return;
     }
     /* Zero the second half. Suppress -Wmemset-elt-size (byte count == element count). */
@@ -205,6 +216,9 @@ void AudioI2S_RefillHalfB(void)
 
     uint16_t n = RingBuffer_Read(mono_scratch, I2S_HALF_MONO_COUNT);
     dbg_track_refill(n);
+
+    /* Feed the spectrum visualizer before the L+R duplication pass. */
+    AudioFFT_PutSamples(mono_scratch, n);
 
     /* Write into the second half: i2s_buf[440 + 2i] and [440 + 2i + 1]. */
     uint16_t base = I2S_HALF_MONO_COUNT * 2;   /* 440 */
