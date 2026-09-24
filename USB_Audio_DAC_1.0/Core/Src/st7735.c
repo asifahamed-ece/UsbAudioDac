@@ -39,9 +39,12 @@
  *    gray-white, magenta reads green, cyan reads brown. If instead your
  *    panel is "normally white", set this to 1 (classic ST7735 modules).
  *  - ST7735_USE_BGR: set 1 if red and blue look swapped on screen.
+ *    This 1.44" 128x128 module is verified BGR (same panel family as the
+ *    RescuePulse ST7735S reference build: invert ON = false, element order
+ *    = BGR). Keep at 1 unless a hardware photo shows swapped colors.
  */
 #define ST7735_USE_INVERSION  0U
-#define ST7735_USE_BGR        0U
+#define ST7735_USE_BGR        1U
 
 /* ST7735S command set (subset used by this driver). */
 #define ST7735_SWRESET  0x01U  /* Software reset                   */
