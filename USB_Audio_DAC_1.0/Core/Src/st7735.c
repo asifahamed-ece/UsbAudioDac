@@ -31,12 +31,25 @@
 #define ST7735_COLSTART  2
 #define ST7735_ROWSTART  3
 
+/* PANEL CONFIGURATION (per-module — flip these if this unit differs):
+ *
+ *  - ST7735_USE_INVERSION: most 1.44" 128x128 ST7735S modules are
+ *    "normally black" glass and must NOT invert (default 0). Forcing
+ *    INVON on such a panel shows inverted video: black looks grainy
+ *    gray-white, magenta reads green, cyan reads brown. If instead your
+ *    panel is "normally white", set this to 1 (classic ST7735 modules).
+ *  - ST7735_USE_BGR: set 1 if red and blue look swapped on screen.
+ */
+#define ST7735_USE_INVERSION  0U
+#define ST7735_USE_BGR        0U
+
 /* ST7735S command set (subset used by this driver). */
 #define ST7735_SWRESET  0x01U  /* Software reset                   */
 #define ST7735_SLPOUT   0x11U  /* Sleep out                        */
 #define ST7735_COLMOD   0x3AU  /* Interface pixel format           */
 #define ST7735_MADCTL   0x36U  /* Memory data access control       */
 #define ST7735_INVON    0x21U  /* Display inversion on             */
+#define ST7735_INVOFF   0x20U  /* Display inversion off            */
 #define ST7735_NORON    0x13U  /* Normal display mode on           */
 #define ST7735_DISPON   0x29U  /* Display on                       */
 #define ST7735_CASET    0x2AU  /* Column address set               */
@@ -283,11 +296,19 @@ void ST7735_Init(void)
 
     ST7735_WriteCommand(ST7735_MADCTL);
     {
-        uint8_t madctl = 0x00U;
+        uint8_t madctl = (ST7735_USE_BGR != 0U) ? 0x08U : 0x00U; /* BGR flag */
         ST7735_WriteData(&madctl, 1U);
     }
 
-    ST7735_WriteCommand(ST7735_INVON);  /* ST7735S 1.44" typically needs inversion */
+    /* Inversion polarity is panel-dependent (see ST7735_USE_INVERSION). */
+    if (ST7735_USE_INVERSION != 0U)
+    {
+        ST7735_WriteCommand(ST7735_INVON);
+    }
+    else
+    {
+        ST7735_WriteCommand(ST7735_INVOFF);
+    }
     ST7735_WriteCommand(ST7735_NORON);
     HAL_Delay(10U);  /* normal mode settle */
     ST7735_WriteCommand(ST7735_DISPON);
@@ -363,10 +384,30 @@ void ST7735_DrawVLine(int16_t x, int16_t y, int16_t h, uint16_t color)
     ST7735_FillRect(x, y, 1, h, color);
 }
 
+static void ST7735_DrawStringScaled(int16_t x, int16_t y, const char *str,
+                                    uint16_t fg, uint16_t bg, int16_t scale);
+
 void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
 {
+    ST7735_DrawStringScaled(x, y, str, fg, bg, 1);
+}
+
+void ST7735_DrawString2x(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
+{
+    ST7735_DrawStringScaled(x, y, str, fg, bg, 2);
+}
+
+/* Shared text renderer. scale = 1 renders 6x8 glyphs; scale = 2 renders
+ * 12x16 blocks (used for splash titles so they are actually legible).
+ * Renders one glyph per address window; correct for clipping against
+ * the screen. */
+static void ST7735_DrawStringScaled(int16_t x, int16_t y, const char *str,
+                                    uint16_t fg, uint16_t bg, int16_t scale)
+{
     int16_t cx = x;
-    uint8_t buf[6 * 8 * 2]; /* one glyph: 48 pixels, BE-packed */
+    uint8_t buf[12 * 16 * 2]; /* one 2x glyph: 12 cols x 16 rows, BE-packed */
+    int16_t glyph_w = (int16_t)(6 * scale);
+    int16_t glyph_h = (int16_t)(8 * scale);
 
     if (str == NULL)
     {
@@ -387,11 +428,11 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
         }
         glyph = font6x8[c - 32U];
 
-        /* Visible sub-rectangle of this 6x8 glyph (clip to screen). */
+        /* Visible sub-rectangle of this scaled glyph (clip to screen). */
         x0 = (cx < 0) ? 0 : cx;
         y0 = (y  < 0) ? 0 : y;
-        x1 = (int16_t)(cx + 5);
-        y1 = (int16_t)(y + 7);
+        x1 = (int16_t)(cx + glyph_w - 1);
+        y1 = (int16_t)(y + glyph_h - 1);
         if (x1 > ST7735_WIDTH - 1)  { x1 = ST7735_WIDTH - 1; }
         if (y1 > ST7735_HEIGHT - 1) { y1 = ST7735_HEIGHT - 1; }
 
@@ -403,16 +444,16 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
 
             for (col = x0; col <= x1; col++)
             {
-                uint8_t bits = glyph[col - cx];
+                uint8_t bits = glyph[(col - cx) / scale];
                 for (row = y0; row <= y1; row++)
                 {
-                    uint16_t color = ((bits >> (row - y)) & 0x01U) ? fg : bg;
+                    uint16_t color = ((bits >> ((row - y) / scale)) & 0x01U) ? fg : bg;
                     pack_be(color, &buf[n]);
                     n += 2U;
                 }
             }
             ST7735_WriteData(buf, (uint16_t)n);
         }
-        cx = (int16_t)(cx + 6);
+        cx = (int16_t)(cx + glyph_w);
     }
 }
