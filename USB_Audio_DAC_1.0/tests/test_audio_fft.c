@@ -1,14 +1,14 @@
 /* tests/test_audio_fft.c
  *
- * Host-simulated unit tests for the 256-point FFT band-binning module.
+ * Host-simulated unit tests for the 1024-point FFT band-binning module.
  *
  * Links the pure-C CMSIS-DSP paths (TransformFunctions etc. compile on
  * host gcc; the RFFT/cmplx_mag code has no ARM asm on the f32 scalar path).
  * Build with `make -C tests run` from USB_Audio_DAC_1.0/.
  *
- * Band map (design spec, Fs=44.1 kHz, N=256, df≈172.27 Hz):
- *   band 0: 60–180 Hz   -> bins [1,2)
- *   band 5: 900–1200 Hz -> bins [6,7)   (1 kHz lands here)
+ * Band map (design spec, Fs=44.1 kHz, N=1024, df≈43.07 Hz):
+ *   band 0: 43–172 Hz    -> bins [1,4)      (bass floor, 60 Hz inside)
+ *   band 4: 947–1378 Hz  -> bins [22,33)    (a 1 kHz tone lands here)
  */
 
 #include <math.h>
@@ -52,7 +52,7 @@ static void fill_sine(int16_t *buf, int16_t amp, float hz)
     }
 }
 
-static void test_1khz_sine_maps_to_band5(void)
+static void test_1khz_sine_maps_to_band4(void)
 {
     int16_t samples[AUDIO_FFT_N];
     uint8_t bands[AUDIO_FFT_BANDS];
@@ -67,9 +67,9 @@ static void test_1khz_sine_maps_to_band5(void)
     AudioFFT_Process(bands);
     CHECK(AudioFFT_FrameReady() == 0);
 
-    /* 1 kHz falls in band 5 (900 Hz–1.2 kHz) — full-scale tone. */
-    CHECK(bands[5] >= 60);
-    /* Band 0 (60–180 Hz) must stay quiet despite Hann leakage. */
+    /* 1 kHz falls in band 4 (947 Hz–1.38 kHz) — full-scale tone. */
+    CHECK(bands[4] >= 60);
+    /* Band 0 (43–172 Hz bass) must stay quiet despite Hann leakage. */
     CHECK(bands[0] < 30);
 
     printf("  bands:");
@@ -122,7 +122,7 @@ static void test_partial_fill_not_ready(void)
 
 int main(void)
 {
-    RUN(1khz_sine_maps_to_band5);
+    RUN(1khz_sine_maps_to_band4);
     RUN(all_zero_input_yields_zero_bands);
     RUN(partial_fill_not_ready);
 
