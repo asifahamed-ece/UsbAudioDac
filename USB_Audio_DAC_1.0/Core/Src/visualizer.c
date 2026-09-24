@@ -1,14 +1,17 @@
 /* Core/Src/visualizer.c
  * 16-band differential spectrum visualizer, Cyberpunk Neon theme
- * (ST7735 128x128).
+ * (ST7735 128x128) in a RescuePulse-style dark skin.
  *
+ * - RescuePulse layout language: full-width dark-slate header band with
+ *   centered device title, dark panel frame around the spectrum, big 2x
+ *   status text on the splash, small 1x gray detail lines.
+ * - The spectrum panel interior is explicitly pure black (COL_BG), so
+ *   the dark theme reads true even before any bars are drawn.
  * - Palette follows the design spec: electric magenta / hyper cyan /
- *   deep synthwave indigo, hot-pink peak dots (not blue/green/yellow).
- * - Bars are smoothed in the visualizer (fast-but-gradual rise,
- *   relaxed fall) so they no longer snap at the FFT frame rate.
- * - Peak dots are 2 px hot pink; restoring an old dot clears BOTH rows
- *   with the correct per-row zone color, so no colored ghosts remain.
- * - Boot animation uses the 2x scaled font for a legible title.
+ *   deep synthwave indigo, hot-pink peak dots.
+ * - Bars are smoothed (fast-but-gradual rise, relaxed fall) and peak
+ *   dots are 2 px hot pink with per-row zone-color restore.
+ * - Text uses the 8x8 row-major font (2x for splash titles).
  */
 
 #include "visualizer.h"
@@ -17,33 +20,41 @@
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
 
-/* Layout */
-#define SEP_Y           19
-#define BARS_TOP        20      /* first pixel row of bar area */
-#define BASELINE_Y      119
-#define BAR_W           6
-#define BAR_GAP         1
-#define MARGIN_X        8
-#define NBANDS          16
-#define MAX_BAR_H       90
+/* Layout (Max bar height is pinned to the FFT's own cap so the
+ * differential renderer can never draw outside the panel). */
+#define HEADER_H       16      /* full-width header band height */
+#define SEP_Y          19      /* boundary below the header band */
+#define PANEL_X        2       /* panel frame left  */
+#define PANEL_RIGHT    125     /* panel frame right */
+#define PANEL_TOP      20      /* panel frame top   */
+#define BARS_TOP       24      /* first pixel row of bar area */
+#define MAX_BAR_H      AUDIO_FFT_MAX_HEIGHT          /* 90 */
+#define BASELINE_Y     (BARS_TOP + MAX_BAR_H)        /* 114 == panel bottom */
+#define PANEL_BOTTOM   BASELINE_Y
+#define Y_BOTTOM       (BARS_TOP + MAX_BAR_H)        /* 114 */
+#define BAR_W          6
+#define BAR_GAP        1
+#define MARGIN_X       8
+#define NBANDS         16
 
-/* Cyberpunk Neon palette (RGB565, from the design spec §4.2). */
+/* Cyberpunk Neon palette (RGB565, from the design spec 4.2 + RescuePulse). */
 #define COL_BG          0x0000  /* pure black                    */
 #define COL_HEADER_ACC  0x073E  /* bright cyan #00E5FF           */
 #define COL_SEP         0x4208  /* medium slate                  */
-#define COL_UPPER       0xF80F  /* electric magenta (top 30%)    */
-#define COL_MID         0x07BF  /* hyper cyan    (mid 40%)       */
-#define COL_LOWER       0x280C  /* deep indigo   (base 30%)      */
+#define COL_PANEL       0x2104  /* dark slate header/splash panel */
+#define COL_PANEL_BD    0x4208  /* panel frame                   */
+#define COL_UPPER       0xF80F  /* electric magenta (top zone)   */
+#define COL_MID         0x07BF  /* hyper cyan    (mid zone)      */
+#define COL_LOWER       0x280C  /* deep indigo   (base zone)     */
 #define COL_PEAK        0xF950  /* hot neon pink peak dot        */
 #define COL_BASELINE    0x8410  /* neutral gray baseline         */
 #define COL_TEXT        0x073E  /* header / title cyan           */
 #define COL_TEXT_DIM    0x7BEF  /* light gray labels             */
+#define COL_OK          0x07E0  /* green "READY"                 */
 
-/* Gradient zone thresholds */
-#define ZONE_MID_Y      (BARS_TOP + 27)
-#define ZONE_UPPER_Y    (BARS_TOP + 63)
-
-#define Y_BOTTOM        (BARS_TOP + MAX_BAR_H)
+/* Gradient zone thresholds (within the 90-px bar height). */
+#define ZONE_MID_Y      (BARS_TOP + 27)   /* 51 */
+#define ZONE_UPPER_Y    (BARS_TOP + 63)   /* 87 */
 
 /* Bar ballistics: per-frame lerp factors. Rise is caught fast but not
  * teleported; fall relaxes for a smooth tumbling drop. */
@@ -92,22 +103,41 @@ static void draw_bar_segment(int16_t x, int16_t y0, int16_t y1)
     }
 }
 
-/* Splash and Boot Loading Animation */
+/* Draw the dark panel frame around the spectrum area. */
+static void draw_panel_frame(void)
+{
+    int16_t h = (int16_t)(PANEL_BOTTOM - PANEL_TOP + 1);
+
+    ST7735_DrawHLine(PANEL_X,     PANEL_TOP,    (int16_t)(PANEL_RIGHT - PANEL_X + 1), COL_PANEL_BD);
+    ST7735_DrawHLine(PANEL_X,     PANEL_BOTTOM, (int16_t)(PANEL_RIGHT - PANEL_X + 1), COL_PANEL_BD);
+    ST7735_DrawVLine(PANEL_X,     PANEL_TOP,    h, COL_PANEL_BD);
+    ST7735_DrawVLine(PANEL_RIGHT, PANEL_TOP,    h, COL_PANEL_BD);
+
+    /* Explicitly black interior (dark theme behind the spectrum). */
+    ST7735_FillRect(PANEL_X + 1, PANEL_TOP + 1,
+                    (int16_t)(PANEL_RIGHT - PANEL_X - 1),
+                    (int16_t)(PANEL_BOTTOM - PANEL_TOP - 1), COL_BG);
+}
+
+/* Splash and Boot Loading Animation (RescuePulse-style centered stack). */
 static void show_boot_animation(void)
 {
     const int16_t bar_start_x = 18;
-    const int16_t bar_start_y = 82;
+    const int16_t bar_start_y = 80;
     const int16_t bar_width   = 92;
     const int16_t bar_height  = 7;
     int progress;
 
     ST7735_FillScreen(COL_BG);
 
-    /* Legible 2x title (12x16 px per glyph). */
-    ST7735_DrawString2x(10, 30, "USB AUDIO", COL_HEADER_ACC, COL_BG);
-    ST7735_DrawString(37, 54, "SYNTHWAVE", COL_UPPER, COL_BG);
+    /* Centered title stack: 2x main word, 1x subtitle + spec line. */
+    ST7735_DrawStringCentered(24, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
+    ST7735_DrawStringCentered(46, "SYNTHWAVE", COL_UPPER, COL_BG, 1);
+    ST7735_DrawStringCentered(58, "44.1 kHz / I2S", COL_TEXT_DIM, COL_BG, 1);
 
-    /* Draw Progress Bar Frame */
+    /* Dark panel + frame behind the progress bar. */
+    ST7735_FillRect(bar_start_x - 1, bar_start_y - 1, bar_width + 2,
+                    bar_height + 2, COL_PANEL);
     ST7735_DrawHLine(bar_start_x - 1, bar_start_y - 1, bar_width + 2, COL_BASELINE);
     ST7735_DrawHLine(bar_start_x - 1, bar_start_y + bar_height, bar_width + 2, COL_BASELINE);
     ST7735_DrawVLine(bar_start_x - 1, bar_start_y - 1, bar_height + 2, COL_BASELINE);
@@ -129,7 +159,7 @@ static void show_boot_animation(void)
         HAL_Delay(9);
     }
 
-    ST7735_DrawString(44, 100, "READY", COL_MID, COL_BG);
+    ST7735_DrawStringCentered(100, "READY", COL_OK, COL_BG, 2);
     HAL_Delay(150);
 }
 
@@ -145,15 +175,16 @@ void Visualizer_Init(void)
     /* Clear and prepare main interface */
     ST7735_FillScreen(COL_BG);
 
-    /* Header & UI Frame */
-    ST7735_DrawString(4, 5, "USB AUDIO", COL_TEXT, COL_BG);
-    ST7735_DrawString(92, 5, "44.1k", COL_TEXT_DIM, COL_BG);
+    /* RescuePulse-style header band with centered device title. */
+    ST7735_FillRect(0, 0, ST7735_WIDTH, HEADER_H, COL_PANEL);
+    ST7735_DrawString(4, 4, "USB AUDIO", COL_TEXT, COL_PANEL);
+    ST7735_DrawString(84, 4, "44.1k", COL_TEXT_DIM, COL_PANEL);
     ST7735_DrawHLine(0, SEP_Y, ST7735_WIDTH, COL_SEP);
-    ST7735_DrawHLine(0, BASELINE_Y, ST7735_WIDTH, COL_BASELINE);
 
-    /* Frequency Band Ticks */
+    /* Spectrum panel: dark frame, black interior, baseline, freq labels. */
+    draw_panel_frame();
     ST7735_DrawString(6, 120, "60", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(54, 120, "1k", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(56, 120, "1k", COL_TEXT_DIM, COL_BG);
     ST7735_DrawString(104, 120, "16k", COL_TEXT_DIM, COL_BG);
 
     /* Reset state */
