@@ -20,4 +20,5 @@ Scratchpad.txt
 .opencode/
 USB_Audio_DAC_1.0/tests/test_ring_buffer
 USB_Audio_DAC_1.0/tests/test_audio_fft
+USB_Audio_DAC_1.0/tests/test_font_render
 docs/
