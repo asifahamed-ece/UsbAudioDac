@@ -29,8 +29,8 @@ static int checks   = 0;
         }                                                           \
     } while (0)
 
-/* Full-scale: exercises peak-normalized mapping (leakage floor must
- * not rise with absolute level). band5 ≥ 60, band0 < 30. */
+/* Full-scale: exercises absolute-dBFS mapping (a full-scale tone must
+ * read near the top, and the Hann leakage floor stay quiet). */
 #define SINE_AMP   32767
 #define SINE_HZ    1000.0f
 #define SAMPLE_RATE 44100.0f
