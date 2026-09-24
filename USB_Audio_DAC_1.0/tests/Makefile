@@ -21,7 +21,7 @@ CMSIS_SRCS = \
 	$(DSP_SRC)/BasicMathFunctions/BasicMathFunctions.c
 CMSIS_LDFLAGS = -ffunction-sections -fdata-sections -Wl,--gc-sections
 
-BIN = test_ring_buffer test_audio_fft
+BIN = test_ring_buffer test_audio_fft test_font_render
 
 all: $(BIN)
 
@@ -32,9 +32,13 @@ test_audio_fft: test_audio_fft.c ../Core/Src/audio_fft.c $(CMSIS_SRCS)
 	$(CC) $(CFLAGS) $(INC) test_audio_fft.c ../Core/Src/audio_fft.c \
 		$(CMSIS_SRCS) $(CMSIS_LDFLAGS) -o $@ -lm
 
+test_font_render: test_font_render.c
+	$(CC) $(CFLAGS) -I../Core/Src $^ -o $@
+
 run: $(BIN)
 	./test_ring_buffer
 	./test_audio_fft
+	./test_font_render
 
 clean:
 	-rm -f $(BIN)

@@ -24,12 +24,29 @@
  */
 
 #include "st7735.h"
+#include "font8x8.h"
 #include <stddef.h>
+#include <string.h>
 
 /* Panel glass offset: ST7735S 128x128 RAM window sits at col=2, row=3.
  * Verify on hardware; adjust these two if the image is shifted. */
 #define ST7735_COLSTART  2
 #define ST7735_ROWSTART  3
+
+/* PANEL CONFIGURATION (per-module — flip these if this unit differs):
+ *
+ *  - ST7735_USE_INVERSION: most 1.44" 128x128 ST7735S modules are
+ *    "normally black" glass and must NOT invert (default 0). Forcing
+ *    INVON on such a panel shows inverted video: black looks grainy
+ *    gray-white, magenta reads green, cyan reads brown. If instead your
+ *    panel is "normally white", set this to 1 (classic ST7735 modules).
+ *  - ST7735_USE_BGR: set 1 if red and blue look swapped on screen.
+ *    This 1.44" 128x128 module is verified BGR (same panel family as the
+ *    RescuePulse ST7735S reference build: invert ON = false, element order
+ *    = BGR). Keep at 1 unless a hardware photo shows swapped colors.
+ */
+#define ST7735_USE_INVERSION  0U
+#define ST7735_USE_BGR        1U
 
 /* ST7735S command set (subset used by this driver). */
 #define ST7735_SWRESET  0x01U  /* Software reset                   */
@@ -37,6 +54,7 @@
 #define ST7735_COLMOD   0x3AU  /* Interface pixel format           */
 #define ST7735_MADCTL   0x36U  /* Memory data access control       */
 #define ST7735_INVON    0x21U  /* Display inversion on             */
+#define ST7735_INVOFF   0x20U  /* Display inversion off            */
 #define ST7735_NORON    0x13U  /* Normal display mode on           */
 #define ST7735_DISPON   0x29U  /* Display on                       */
 #define ST7735_CASET    0x2AU  /* Column address set               */
@@ -48,109 +66,6 @@ static SPI_HandleTypeDef hspi1;
 
 /* Stack chunk for FillRect pixel streaming: 64 bytes = 32 RGB565 pixels. */
 #define ST7735_CHUNK_BYTES  64U
-
-/* ----------------------------------------------------------------------------
- * Public-domain 6x8 font, ASCII 32..126 (95 glyphs).
- * Column-major, 6 bytes per glyph; standard table used by Adafruit /
- * Bodmer-style ST7735 drivers. Bit 0 = top pixel of the column.
- * -------------------------------------------------------------------------- */
-static const uint8_t font6x8[95][6] = {
-    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, /* 32 ' ' */
-    {0x00, 0x00, 0x2F, 0x00, 0x00, 0x00}, /* 33 '!' */
-    {0x00, 0x07, 0x00, 0x07, 0x00, 0x00}, /* 34 '"' */
-    {0x14, 0x7F, 0x14, 0x7F, 0x14, 0x00}, /* 35 '#' */
-    {0x24, 0x2A, 0x7F, 0x2A, 0x12, 0x00}, /* 36 '$' */
-    {0x23, 0x13, 0x08, 0x64, 0x62, 0x00}, /* 37 '%' */
-    {0x36, 0x49, 0x55, 0x22, 0x50, 0x00}, /* 38 '&' */
-    {0x00, 0x05, 0x03, 0x00, 0x00, 0x00}, /* 39 ''' */
-    {0x00, 0x1C, 0x22, 0x41, 0x00, 0x00}, /* 40 '(' */
-    {0x00, 0x41, 0x22, 0x1C, 0x00, 0x00}, /* 41 ')' */
-    {0x14, 0x08, 0x3E, 0x08, 0x14, 0x00}, /* 42 '*' */
-    {0x08, 0x08, 0x3E, 0x08, 0x08, 0x00}, /* 43 '+' */
-    {0x00, 0x50, 0x30, 0x00, 0x00, 0x00}, /* 44 ',' */
-    {0x08, 0x08, 0x08, 0x08, 0x08, 0x00}, /* 45 '-' */
-    {0x00, 0x60, 0x60, 0x00, 0x00, 0x00}, /* 46 '.' */
-    {0x20, 0x10, 0x08, 0x04, 0x02, 0x00}, /* 47 '/' */
-    {0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00}, /* 48 '0' */
-    {0x00, 0x42, 0x7F, 0x40, 0x00, 0x00}, /* 49 '1' */
-    {0x42, 0x61, 0x51, 0x49, 0x46, 0x00}, /* 50 '2' */
-    {0x21, 0x41, 0x45, 0x4B, 0x31, 0x00}, /* 51 '3' */
-    {0x18, 0x14, 0x12, 0x7F, 0x10, 0x00}, /* 52 '4' */
-    {0x27, 0x45, 0x45, 0x45, 0x39, 0x00}, /* 53 '5' */
-    {0x3C, 0x4A, 0x49, 0x49, 0x30, 0x00}, /* 54 '6' */
-    {0x01, 0x71, 0x09, 0x05, 0x03, 0x00}, /* 55 '7' */
-    {0x36, 0x49, 0x49, 0x49, 0x36, 0x00}, /* 56 '8' */
-    {0x06, 0x49, 0x49, 0x29, 0x1E, 0x00}, /* 57 '9' */
-    {0x00, 0x36, 0x36, 0x00, 0x00, 0x00}, /* 58 ':' */
-    {0x00, 0x56, 0x36, 0x00, 0x00, 0x00}, /* 59 ';' */
-    {0x08, 0x14, 0x22, 0x41, 0x00, 0x00}, /* 60 '<' */
-    {0x14, 0x14, 0x14, 0x14, 0x14, 0x00}, /* 61 '=' */
-    {0x00, 0x41, 0x22, 0x14, 0x08, 0x00}, /* 62 '>' */
-    {0x02, 0x01, 0x51, 0x09, 0x06, 0x00}, /* 63 '?' */
-    {0x32, 0x49, 0x79, 0x41, 0x3E, 0x00}, /* 64 '@' */
-    {0x7E, 0x11, 0x11, 0x11, 0x7E, 0x00}, /* 65 'A' */
-    {0x7F, 0x49, 0x49, 0x49, 0x36, 0x00}, /* 66 'B' */
-    {0x3E, 0x41, 0x41, 0x41, 0x22, 0x00}, /* 67 'C' */
-    {0x7F, 0x41, 0x41, 0x22, 0x1C, 0x00}, /* 68 'D' */
-    {0x7F, 0x49, 0x49, 0x49, 0x41, 0x00}, /* 69 'E' */
-    {0x7F, 0x09, 0x09, 0x09, 0x01, 0x00}, /* 70 'F' */
-    {0x3E, 0x41, 0x49, 0x49, 0x7A, 0x00}, /* 71 'G' */
-    {0x7F, 0x08, 0x08, 0x08, 0x7F, 0x00}, /* 72 'H' */
-    {0x00, 0x41, 0x7F, 0x41, 0x00, 0x00}, /* 73 'I' */
-    {0x20, 0x40, 0x41, 0x3F, 0x01, 0x00}, /* 74 'J' */
-    {0x7F, 0x08, 0x14, 0x22, 0x41, 0x00}, /* 75 'K' */
-    {0x7F, 0x40, 0x40, 0x40, 0x40, 0x00}, /* 76 'L' */
-    {0x7F, 0x02, 0x0C, 0x02, 0x7F, 0x00}, /* 77 'M' */
-    {0x7F, 0x04, 0x08, 0x10, 0x7F, 0x00}, /* 78 'N' */
-    {0x3E, 0x41, 0x41, 0x41, 0x3E, 0x00}, /* 79 'O' */
-    {0x7F, 0x09, 0x09, 0x09, 0x06, 0x00}, /* 80 'P' */
-    {0x3E, 0x41, 0x51, 0x21, 0x5E, 0x00}, /* 81 'Q' */
-    {0x7F, 0x09, 0x19, 0x29, 0x46, 0x00}, /* 82 'R' */
-    {0x46, 0x49, 0x49, 0x49, 0x31, 0x00}, /* 83 'S' */
-    {0x01, 0x01, 0x7F, 0x01, 0x01, 0x00}, /* 84 'T' */
-    {0x3F, 0x40, 0x40, 0x40, 0x3F, 0x00}, /* 85 'U' */
-    {0x1F, 0x20, 0x40, 0x20, 0x1F, 0x00}, /* 86 'V' */
-    {0x3F, 0x40, 0x38, 0x40, 0x3F, 0x00}, /* 87 'W' */
-    {0x63, 0x14, 0x08, 0x14, 0x63, 0x00}, /* 88 'X' */
-    {0x07, 0x08, 0x70, 0x08, 0x07, 0x00}, /* 89 'Y' */
-    {0x61, 0x51, 0x49, 0x45, 0x43, 0x00}, /* 90 'Z' */
-    {0x00, 0x7F, 0x41, 0x41, 0x00, 0x00}, /* 91 '[' */
-    {0x02, 0x04, 0x08, 0x10, 0x20, 0x00}, /* 92 '\' */
-    {0x00, 0x41, 0x41, 0x7F, 0x00, 0x00}, /* 93 ']' */
-    {0x04, 0x02, 0x01, 0x02, 0x04, 0x00}, /* 94 '^' */
-    {0x40, 0x40, 0x40, 0x40, 0x40, 0x00}, /* 95 '_' */
-    {0x00, 0x01, 0x02, 0x04, 0x00, 0x00}, /* 96 '`' */
-    {0x20, 0x54, 0x54, 0x54, 0x78, 0x00}, /* 97 'a' */
-    {0x7F, 0x48, 0x44, 0x44, 0x38, 0x00}, /* 98 'b' */
-    {0x38, 0x44, 0x44, 0x44, 0x20, 0x00}, /* 99 'c' */
-    {0x38, 0x44, 0x44, 0x48, 0x7F, 0x00}, /* 100 'd' */
-    {0x38, 0x54, 0x54, 0x54, 0x18, 0x00}, /* 101 'e' */
-    {0x08, 0x7E, 0x09, 0x01, 0x02, 0x00}, /* 102 'f' */
-    {0x0C, 0x52, 0x52, 0x52, 0x3E, 0x00}, /* 103 'g' */
-    {0x7F, 0x08, 0x04, 0x04, 0x78, 0x00}, /* 104 'h' */
-    {0x00, 0x44, 0x7D, 0x40, 0x00, 0x00}, /* 105 'i' */
-    {0x20, 0x40, 0x44, 0x3D, 0x00, 0x00}, /* 106 'j' */
-    {0x7F, 0x10, 0x28, 0x44, 0x00, 0x00}, /* 107 'k' */
-    {0x00, 0x41, 0x7F, 0x40, 0x00, 0x00}, /* 108 'l' */
-    {0x7C, 0x04, 0x18, 0x04, 0x78, 0x00}, /* 109 'm' */
-    {0x7C, 0x08, 0x04, 0x04, 0x78, 0x00}, /* 110 'n' */
-    {0x38, 0x44, 0x44, 0x44, 0x38, 0x00}, /* 111 'o' */
-    {0x7C, 0x14, 0x14, 0x14, 0x08, 0x00}, /* 112 'p' */
-    {0x08, 0x14, 0x14, 0x18, 0x7C, 0x00}, /* 113 'q' */
-    {0x7C, 0x08, 0x04, 0x04, 0x08, 0x00}, /* 114 'r' */
-    {0x48, 0x54, 0x54, 0x54, 0x20, 0x00}, /* 115 's' */
-    {0x04, 0x3F, 0x44, 0x40, 0x20, 0x00}, /* 116 't' */
-    {0x3C, 0x40, 0x40, 0x20, 0x7C, 0x00}, /* 117 'u' */
-    {0x1C, 0x20, 0x40, 0x20, 0x1C, 0x00}, /* 118 'v' */
-    {0x3C, 0x40, 0x30, 0x40, 0x3C, 0x00}, /* 119 'w' */
-    {0x44, 0x28, 0x10, 0x28, 0x44, 0x00}, /* 120 'x' */
-    {0x0C, 0x50, 0x50, 0x50, 0x3C, 0x00}, /* 121 'y' */
-    {0x44, 0x64, 0x54, 0x4C, 0x44, 0x00}, /* 122 'z' */
-    {0x00, 0x08, 0x36, 0x41, 0x00, 0x00}, /* 123 '{' */
-    {0x00, 0x00, 0x7F, 0x00, 0x00, 0x00}, /* 124 '|' */
-    {0x00, 0x41, 0x36, 0x08, 0x00, 0x00}, /* 125 '}' */
-    {0x08, 0x08, 0x2A, 0x1C, 0x08, 0x00}, /* 126 '~' */
-};
 
 /* RGB565 is transmitted high-byte-first on the wire. STM32 is
  * little-endian, so pack explicitly: buf[0] = color >> 8 (high),
@@ -283,11 +198,19 @@ void ST7735_Init(void)
 
     ST7735_WriteCommand(ST7735_MADCTL);
     {
-        uint8_t madctl = 0x00U;
+        uint8_t madctl = (ST7735_USE_BGR != 0U) ? 0x08U : 0x00U; /* BGR flag */
         ST7735_WriteData(&madctl, 1U);
     }
 
-    ST7735_WriteCommand(ST7735_INVON);  /* ST7735S 1.44" typically needs inversion */
+    /* Inversion polarity is panel-dependent (see ST7735_USE_INVERSION). */
+    if (ST7735_USE_INVERSION != 0U)
+    {
+        ST7735_WriteCommand(ST7735_INVON);
+    }
+    else
+    {
+        ST7735_WriteCommand(ST7735_INVOFF);
+    }
     ST7735_WriteCommand(ST7735_NORON);
     HAL_Delay(10U);  /* normal mode settle */
     ST7735_WriteCommand(ST7735_DISPON);
@@ -363,10 +286,51 @@ void ST7735_DrawVLine(int16_t x, int16_t y, int16_t h, uint16_t color)
     ST7735_FillRect(x, y, 1, h, color);
 }
 
+static void ST7735_DrawStringScaled(int16_t x, int16_t y, const char *str,
+                                    uint16_t fg, uint16_t bg, int16_t scale);
+
 void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
 {
+    ST7735_DrawStringScaled(x, y, str, fg, bg, 1);
+}
+
+void ST7735_DrawString2x(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
+{
+    ST7735_DrawStringScaled(x, y, str, fg, bg, 2);
+}
+
+/* Centered horizontally (assuming font glyph width = 8 * scale). */
+void ST7735_DrawStringCentered(int16_t y, const char *str, uint16_t fg,
+                               uint16_t bg, int16_t scale)
+{
+    int16_t w;
+
+    if (str == NULL)
+    {
+        return;
+    }
+    w = (int16_t)(strlen(str) * 8U * (uint16_t)scale);
+    if (w > ST7735_WIDTH)
+    {
+        w = ST7735_WIDTH;
+    }
+    ST7735_DrawStringScaled((int16_t)((ST7735_WIDTH - w) / 2), y, str, fg, bg, scale);
+}
+
+/* Shared text renderer over the row-major 8x8 font in font8x8.h.
+ * scale = 1 renders 8x8 glyphs; scale = 2 renders 16x16 blocks.
+ *
+ * The ST7735 fills a RAM write window with X (column) incrementing
+ * fastest, i.e. row-major. Font bytes are also row-major with bit 7 =
+ * leftmost pixel, so emission must be row outer / column inner; the
+ * earlier column-outer order transposed every glyph into garbage. */
+static void ST7735_DrawStringScaled(int16_t x, int16_t y, const char *str,
+                                    uint16_t fg, uint16_t bg, int16_t scale)
+{
     int16_t cx = x;
-    uint8_t buf[6 * 8 * 2]; /* one glyph: 48 pixels, BE-packed */
+    uint8_t buf[16 * 16 * 2]; /* one 2x glyph: 16 cols x 16 rows, BE-packed */
+    int16_t glyph_w = (int16_t)(8 * scale);
+    int16_t glyph_h = (int16_t)(8 * scale);
 
     if (str == NULL)
     {
@@ -385,13 +349,13 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
         {
             c = '?'; /* replace out-of-range with '?' */
         }
-        glyph = font6x8[c - 32U];
+        glyph = font8x8[c - 32U];
 
-        /* Visible sub-rectangle of this 6x8 glyph (clip to screen). */
+        /* Visible sub-rectangle of this scaled glyph (clip to screen). */
         x0 = (cx < 0) ? 0 : cx;
         y0 = (y  < 0) ? 0 : y;
-        x1 = (int16_t)(cx + 5);
-        y1 = (int16_t)(y + 7);
+        x1 = (int16_t)(cx + glyph_w - 1);
+        y1 = (int16_t)(y + glyph_h - 1);
         if (x1 > ST7735_WIDTH - 1)  { x1 = ST7735_WIDTH - 1; }
         if (y1 > ST7735_HEIGHT - 1) { y1 = ST7735_HEIGHT - 1; }
 
@@ -401,18 +365,18 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
              * so the byte count always matches the window size. */
             SetAddressWindow(x0, y0, x1, y1);
 
-            for (col = x0; col <= x1; col++)
+            for (row = y0; row <= y1; row++)
             {
-                uint8_t bits = glyph[col - cx];
-                for (row = y0; row <= y1; row++)
+                uint8_t bits = glyph[(row - y) / scale];
+                for (col = x0; col <= x1; col++)
                 {
-                    uint16_t color = ((bits >> (row - y)) & 0x01U) ? fg : bg;
+                    uint16_t color = ((bits >> (7 - (col - cx) / scale)) & 0x01U) ? fg : bg;
                     pack_be(color, &buf[n]);
                     n += 2U;
                 }
             }
             ST7735_WriteData(buf, (uint16_t)n);
         }
-        cx = (int16_t)(cx + 6);
+        cx = (int16_t)(cx + glyph_w);
     }
 }
