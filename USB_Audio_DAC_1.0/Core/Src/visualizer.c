@@ -1,16 +1,21 @@
 /* Core/Src/visualizer.c
- * 16-band differential spectrum visualizer, Cyberpunk Neon theme
- * (ST7735 128x128) in a RescuePulse-style dark skin.
+ * 10-band rainbow LED-block spectrum visualizer (ST7735 128x128) in a
+ * RescuePulse-style dark skin.
  *
  * - RescuePulse layout language: full-width dark-slate header band with
  *   centered device title, dark panel frame around the spectrum, big 2x
  *   status text on the splash, small 1x gray detail lines.
- * - The spectrum panel interior is explicitly pure black (COL_BG), so
- *   the dark theme reads true even before any bars are drawn.
- * - Palette follows the design spec: electric magenta / hyper cyan /
- *   deep synthwave indigo, hot-pink peak dots.
- * - Bars are smoothed (fast-but-gradual rise, relaxed fall) and peak
- *   dots are 2 px hot pink with per-row zone-color restore.
+ * - Each bar is a column of stacked LED blocks (6 px block, 1 px gap).
+ *   Heights and tops snap to whole blocks, so a bar always reads as
+ *   discrete blocks piled on one another, never a solid rectangle.
+ * - Every column gets its own color pulled from a 10-step rainbow:
+ *   red -> orange -> chartreuse -> green -> spring green -> cyan ->
+ *   azure -> blue-violet -> violet -> pink, left to right. Gaps and the
+ *   panel interior stay pure black.
+ * - Bars are smoothed (fast-but-gradual rise, relaxed fall) and peaked
+ *   by a 2 px hot-pink dot that floats above the stack as it decays.
+ * - Boot splash runs ~1.9 s (46 fill steps x 38 ms + READY hold) so the
+ *   loading meter is readable but still under 2 s.
  * - Text uses the 8x8 row-major font (2x for splash titles).
  */
 
@@ -32,10 +37,20 @@
 #define BASELINE_Y     (BARS_TOP + MAX_BAR_H)        /* 114 == panel bottom */
 #define PANEL_BOTTOM   BASELINE_Y
 #define Y_BOTTOM       (BARS_TOP + MAX_BAR_H)        /* 114 */
-#define BAR_W          6
+#define BAR_W          11
 #define BAR_GAP        1
-#define MARGIN_X       8
-#define NBANDS         16
+#define MARGIN_X       4
+#define NBANDS         10
+
+/* LED block geometry: 6 px lit block + 1 px black gap = 7 px unit.
+ * 90 px column snaps to 12 full blocks (84 px), 6 px air at the top. */
+#define BLOCK_H        6
+#define BLOCK_GAP      1
+#define BLOCK_UNIT     (BLOCK_H + BLOCK_GAP)         /* 7 */
+
+/* Boot animation pacing: 46 steps x 38 ms ~= 1.75 s + 150 ms READY. */
+#define BOOT_STEP_DELAY_MS  38
+#define BOOT_HOLD_MS        150
 
 /* Cyberpunk Neon palette (RGB565, from the design spec 4.2 + RescuePulse). */
 #define COL_BG          0x0000  /* pure black                    */
@@ -43,63 +58,86 @@
 #define COL_SEP         0x4208  /* medium slate                  */
 #define COL_PANEL       0x2104  /* dark slate header/splash panel */
 #define COL_PANEL_BD    0x4208  /* panel frame                   */
-#define COL_UPPER       0xF80F  /* electric magenta (top zone)   */
-#define COL_MID         0x07BF  /* hyper cyan    (mid zone)      */
-#define COL_LOWER       0x280C  /* deep indigo   (base zone)     */
+#define COL_UPPER       0xF80F  /* electric magenta (splash fill) */
+#define COL_MID         0x07BF  /* hyper cyan    (splash fill)    */
+#define COL_LOWER       0x280C  /* deep indigo   (splash fill)    */
 #define COL_PEAK        0xF950  /* hot neon pink peak dot        */
 #define COL_BASELINE    0x8410  /* neutral gray baseline         */
 #define COL_TEXT        0x073E  /* header / title cyan           */
 #define COL_TEXT_DIM    0x7BEF  /* light gray labels             */
 #define COL_OK          0x07E0  /* green "READY"                 */
 
-/* Gradient zone thresholds (within the 90-px bar height). */
-#define ZONE_MID_Y      (BARS_TOP + 27)   /* 51 */
-#define ZONE_UPPER_Y    (BARS_TOP + 63)   /* 87 */
+/* One rainbow color per bar column, left -> right. Evenly spaced hues
+ * converted to RGB565. */
+static const uint16_t band_colors[NBANDS] = {
+    0xF800,   /* red          */
+    0xFCC0,   /* orange       */
+    0xCFE0,   /* chartreuse   */
+    0x37E0,   /* green        */
+    0x07EC,   /* spring green */
+    0x07FF,   /* cyan         */
+    0x033F,   /* azure        */
+    0xC81F,   /* blue-violet  */
+    0x301F,   /* violet       */
+    0xF80C    /* pink         */
+};
+
+/* Merge the FFT's 16 log-spaced bands down to 10 display columns so the
+ * whole 172 Hz -> ~14 kHz range is still shown. Each display band uses
+ * the louder of its two source bands (max keeps kick peaks). */
+static const uint8_t merge_lo[NBANDS] = { 0, 1,  2,  3,  4, 6,  8, 10, 12, 14 };
+static const uint8_t merge_hi[NBANDS] = { 0, 1,  2,  3,  5, 7,  9, 11, 13, 15 };
 
 /* Bar ballistics: per-frame lerp factors. Rise is caught fast but not
  * teleported; fall relaxes for a smooth tumbling drop. */
 #define VIS_ATTACK_UP   0.35f
 #define VIS_ATTACK_DOWN 0.15f
 
-/* State */
-static uint8_t  rendered_h[NBANDS];   /* last drawn bar height */
-static uint8_t  peak_h[NBANDS];       /* peak-hold height */
-static uint8_t  peak_counter[NBANDS]; /* hold frames remaining */
-static uint8_t  bands[NBANDS];        /* current FFT band heights */
-static float    display_h[NBANDS];    /* smoothed bar heights */
+/* State (bands[] must match the FFT's own 16-band width for the
+ * AudioFFT_Process call; NBANDS is the on-screen column count). */
+static uint8_t  rendered_h[NBANDS];       /* last drawn (snapped) height */
+static uint8_t  peak_h[NBANDS];           /* peak-hold height */
+static uint8_t  peak_counter[NBANDS];     /* hold frames remaining */
+static uint8_t  bands[AUDIO_FFT_BANDS];   /* current FFT band heights */
+static float    display_h[NBANDS];        /* smoothed bar heights */
 static uint32_t last_update_ms;
 
-/* Returns zone color based on Y coordinate */
-static uint16_t bar_zone_color(int16_t y)
+/* Snap a height down to a whole-block multiple so bar tops always land
+ * on a flat block edge. */
+static uint8_t snap_height(uint8_t h)
 {
-    if (y < ZONE_MID_Y) {
-        return COL_UPPER;
-    }
-    if (y < ZONE_UPPER_Y) {
-        return COL_MID;
-    }
-    return COL_LOWER;
+    return (uint8_t)(((uint16_t)h / (uint16_t)BLOCK_UNIT) *
+                     (uint16_t)BLOCK_UNIT);
 }
 
-/* Draw absolute rows [y0, y1) of one bar */
-static void draw_bar_segment(int16_t x, int16_t y0, int16_t y1)
+/* Draw only the lit block rows of [y0, y1) for one bar; gap rows are
+ * left black. Callers feed snapped spans so the region edges align to
+ * block boundaries. */
+static void draw_bar_blocks(int16_t x, int16_t y0, int16_t y1, uint16_t col)
 {
     while (y0 < y1) {
-        uint16_t c = bar_zone_color(y0);
-        int16_t y_end;
+        uint16_t rel = (uint16_t)(Y_BOTTOM - 1 - y0);
+        if ((rel % (uint16_t)BLOCK_UNIT) < (uint16_t)BLOCK_H) {
+            ST7735_FillRect(x, y0, BAR_W, 1, col);
+        }
+        y0++;
+    }
+}
 
-        if (c == COL_UPPER) {
-            y_end = ZONE_MID_Y;
-        } else if (c == COL_MID) {
-            y_end = ZONE_UPPER_Y;
-        } else {
-            y_end = y1;
-        }
-        if (y_end > y1) {
-            y_end = y1;
-        }
-        ST7735_FillRect(x, y0, BAR_W, (int16_t)(y_end - y0), c);
-        y0 = y_end;
+/* Restore one row that an old peak dot may have covered: repaint it with
+ * the bar color only if it is a lit block row inside the current bar;
+ * background and gap rows simply stay black. */
+static void restore_peak_row(int16_t x, int16_t y, uint8_t new_h, uint16_t col)
+{
+    int16_t  bar_top = (int16_t)(Y_BOTTOM - new_h);
+    uint16_t rel;
+
+    if (y < bar_top) {
+        return; /* above the bar: pure background */
+    }
+    rel = (uint16_t)(Y_BOTTOM - 1 - y);
+    if ((rel % (uint16_t)BLOCK_UNIT) < (uint16_t)BLOCK_H) {
+        ST7735_FillRect(x, y, BAR_W, 1, col);
     }
 }
 
@@ -143,7 +181,7 @@ static void show_boot_animation(void)
     ST7735_DrawVLine(bar_start_x - 1, bar_start_y - 1, bar_height + 2, COL_BASELINE);
     ST7735_DrawVLine(bar_start_x + bar_width, bar_start_y - 1, bar_height + 2, COL_BASELINE);
 
-    /* Smooth Progress Fill with Neon Color Evolution */
+    /* Slow Neon Color Evolution Fill (~1.75 s -> total boot ~1.9 s). */
     for (progress = 0; progress <= bar_width - 2; progress += 2) {
         uint16_t col;
 
@@ -156,11 +194,11 @@ static void show_boot_animation(void)
         }
 
         ST7735_FillRect(bar_start_x + progress, bar_start_y, 2, bar_height, col);
-        HAL_Delay(9);
+        HAL_Delay(BOOT_STEP_DELAY_MS);
     }
 
     ST7735_DrawStringCentered(100, "READY", COL_OK, COL_BG, 2);
-    HAL_Delay(150);
+    HAL_Delay(BOOT_HOLD_MS);
 }
 
 void Visualizer_Init(void)
@@ -192,8 +230,10 @@ void Visualizer_Init(void)
         rendered_h[i] = 0;
         peak_h[i] = 0;
         peak_counter[i] = 0;
-        bands[i] = 0;
         display_h[i] = 0.0f;
+    }
+    for (i = 0; i < AUDIO_FFT_BANDS; i++) {
+        bands[i] = 0;
     }
     last_update_ms = 0;
 }
@@ -214,10 +254,18 @@ void Visualizer_Update(void)
 
     for (i = 0; i < NBANDS; i++) {
         int16_t x = (int16_t)(MARGIN_X + i * (BAR_W + BAR_GAP));
+        uint16_t col = band_colors[i];
         uint8_t old_h = rendered_h[i];
         uint8_t old_peak = peak_h[i];
-        float   tgt = (float)bands[i];
+        float   tgt;
+        uint8_t raw_new;
         uint8_t new_h;
+
+        /* Merge the two source FFT bands, keeping the louder one. */
+        tgt = (float)bands[merge_lo[i]];
+        if ((float)bands[merge_hi[i]] > tgt) {
+            tgt = (float)bands[merge_hi[i]];
+        }
 
         /* Smooth bar ballistics so heights glide instead of snapping. */
         if (tgt > (float)AUDIO_FFT_MAX_HEIGHT) {
@@ -228,10 +276,11 @@ void Visualizer_Update(void)
         } else {
             display_h[i] += (tgt - display_h[i]) * VIS_ATTACK_DOWN;
         }
-        new_h = (uint8_t)(display_h[i] + 0.5f);
-        if (new_h > AUDIO_FFT_MAX_HEIGHT) {
-            new_h = AUDIO_FFT_MAX_HEIGHT;
+        raw_new = (uint8_t)(display_h[i] + 0.5f);
+        if (raw_new > AUDIO_FFT_MAX_HEIGHT) {
+            raw_new = AUDIO_FFT_MAX_HEIGHT;
         }
+        new_h = snap_height(raw_new);
 
         /* Smooth Peak Ballistics with Exponential Decay */
         if (new_h >= peak_h[i]) {
@@ -260,12 +309,16 @@ void Visualizer_Update(void)
             old_peak = AUDIO_FFT_MAX_HEIGHT;
         }
 
-        /* Differential rendering of audio bar */
+        /* Differential rendering of the LED block bar */
         if (new_h > old_h) {
-            draw_bar_segment(x,
-                             (int16_t)(Y_BOTTOM - new_h),
-                             (int16_t)(Y_BOTTOM - old_h));
+            draw_bar_blocks(x,
+                            (int16_t)(Y_BOTTOM - new_h),
+                            (int16_t)(Y_BOTTOM - old_h),
+                            col);
         } else if (new_h < old_h) {
+            /* Shrinking: everything in the span becomes black again
+             * (gaps are already black; a flat fill erases leftover
+             * block pixels too). */
             ST7735_FillRect(x,
                             (int16_t)(Y_BOTTOM - old_h),
                             BAR_W,
@@ -273,19 +326,14 @@ void Visualizer_Update(void)
                             COL_BG);
         }
 
-        /* Differential render of the 2 px peak mark. Clear each of the
-         * two old rows with the color that actually belongs there (bar
-         * zone color per row, or background), so no ghost pixels remain. */
+        /* Differential render of the 2 px peak mark. Restore each old
+         * row to bar color only where a lit block actually belongs, so
+         * no ghost pixels and no filled gaps. */
         if (old_peak > 0U && old_peak != peak_h[i]) {
             int16_t row0 = (int16_t)(Y_BOTTOM - old_peak);
-            int16_t bar_top = (int16_t)(Y_BOTTOM - new_h);
 
-            if (row0 >= bar_top) {
-                ST7735_FillRect(x, row0, BAR_W, 1, bar_zone_color(row0));
-                ST7735_FillRect(x, row0 + 1, BAR_W, 1, bar_zone_color(row0 + 1));
-            } else {
-                ST7735_FillRect(x, row0, BAR_W, 2, COL_BG);
-            }
+            restore_peak_row(x, row0, new_h, col);
+            restore_peak_row(x, row0 + 1, new_h, col);
         }
 
         if (peak_h[i] > 0U) {
