@@ -221,11 +221,11 @@ void Visualizer_Init(void)
     ST7735_DrawString(84, 4, "44.1k", COL_TEXT_DIM, COL_PANEL);
     ST7735_DrawHLine(0, SEP_Y, ST7735_WIDTH, COL_SEP);
 
-    /* Spectrum panel: dark frame, black interior, baseline, freq labels. */
+    /* Spectrum panel: dark frame, black interior, baseline, region labels. */
     draw_panel_frame();
-    ST7735_DrawString(6, 120, "40", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(40, 120, "1k", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(104, 120, "12k", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(4, 120, "Lows", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(37, 120, "Mids", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(83, 120, "Highs", COL_TEXT_DIM, COL_BG);
 
     /* Reset state */
     for (i = 0; i < NBANDS; i++) {
