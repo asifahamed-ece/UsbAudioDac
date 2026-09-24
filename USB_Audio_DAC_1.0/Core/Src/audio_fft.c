@@ -40,7 +40,15 @@
 #define AUDIO_FFT_DB_RANGE  60.0f
 #define AUDIO_FFT_DECAY     0.78f
 #define AUDIO_FFT_PI        3.14159265358979323846f
-#define AUDIO_FFT_PEAK_EPS  1.0e-6f
+
+/* Absolute dBFS reference for the band mapping. A full-scale sine
+ * (amplitude 32767) produces a Hann-windowed FFT magnitude of
+ * A * N/2 * 0.5 at its bin, so its average band reads 0 dB and maps to
+ * full height. Real playback levels land below this, which makes the
+ * display respond to the laptop's volume instead of renormalizing every
+ * frame against the loudest bin (which kept bars near-full at any
+ * non-zero volume). */
+#define AUDIO_FFT_FULL_SCALE  (32767.0f * 0.5f * (float)(AUDIO_FFT_N / 2U))
 
 /* ISR double-buffer + main-loop FFT scratch.
  * Note: STM32F411 has NO CCMRAM (only F405/407/429 do). Buffers live in
@@ -133,7 +141,6 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
         const int16_t *frame = tap_buf[1U - write_idx];
         uint32_t i;
         uint8_t  b;
-        float    peak;
 
         for (i = 0U; i < (uint32_t)AUDIO_FFT_N; i++) {
             fft_in[i] = (float)frame[i] * hann_window[i];
@@ -141,14 +148,6 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
 
         arm_rfft_fast_f32(&rfft_instance, fft_in, fft_out, 0U);
         arm_cmplx_mag_f32(fft_out, mag, (uint32_t)(AUDIO_FFT_N / 2U));
-
-        /* Peak of non-DC bins — scale reference for this frame. */
-        peak = 0.0f;
-        for (i = 1U; i < (uint32_t)(AUDIO_FFT_N / 2U); i++) {
-            if (mag[i] > peak) {
-                peak = mag[i];
-            }
-        }
 
         for (b = 0U; b < (uint8_t)AUDIO_FFT_BANDS; b++) {
             uint16_t lo  = band_start[b];
@@ -163,10 +162,11 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
             }
             avg = sum / (float)(hi - lo);
 
-            if (peak > AUDIO_FFT_PEAK_EPS) {
-                float ratio = avg / peak;
+            {
+                /* Level relative to full scale (0 dBFS = full bar). */
+                float ratio = avg / AUDIO_FFT_FULL_SCALE;
                 if (ratio >= 1.0e-10f) {
-                    /* ≤ 0 dB; map [−RANGE, 0] → [0, MAX_HEIGHT]. */
+                    /* Map [−RANGE, 0] dBFS → [0, MAX_HEIGHT]. */
                     float db = 20.0f * log10f(ratio);
                     target = (db + AUDIO_FFT_DB_RANGE) *
                              ((float)AUDIO_FFT_MAX_HEIGHT /
@@ -190,6 +190,15 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
         }
 
         frame_ready = 0U;
+    } else {
+        /* Idle: the USB stream stalled (host paused playback and stopped
+         * delivering audio). Decay every band toward zero so the display
+         * falls to a clean black background instead of freezing at the
+         * last levels. */
+        uint8_t b;
+        for (b = 0U; b < (uint8_t)AUDIO_FFT_BANDS; b++) {
+            band_current[b] *= AUDIO_FFT_DECAY;
+        }
     }
 
     {

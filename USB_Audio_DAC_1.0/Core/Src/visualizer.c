@@ -124,20 +124,20 @@ static void draw_bar_blocks(int16_t x, int16_t y0, int16_t y1, uint16_t col)
     }
 }
 
-/* Restore one row that an old peak dot may have covered: repaint it with
- * the bar color only if it is a lit block row inside the current bar;
- * background and gap rows simply stay black. */
+/* Restore one row that an old peak dot may have covered. The row must
+ * always be overwritten: lit block rows inside the current bar get the
+ * bar color, while gap rows, rows above the bar, and rows below the
+ * baseline all go black — otherwise the falling peak dot strands pink
+ * pixels behind it (stale magenta trails after pause). */
 static void restore_peak_row(int16_t x, int16_t y, uint8_t new_h, uint16_t col)
 {
-    int16_t  bar_top = (int16_t)(Y_BOTTOM - new_h);
-    uint16_t rel;
+    int16_t bar_top = (int16_t)(Y_BOTTOM - new_h);
+    int16_t rel     = (int16_t)(Y_BOTTOM - 1 - y);
 
-    if (y < bar_top) {
-        return; /* above the bar: pure background */
-    }
-    rel = (uint16_t)(Y_BOTTOM - 1 - y);
-    if ((rel % (uint16_t)BLOCK_UNIT) < (uint16_t)BLOCK_H) {
+    if (y >= bar_top && (rel % (int16_t)BLOCK_UNIT) < (int16_t)BLOCK_H) {
         ST7735_FillRect(x, y, BAR_W, 1, col);
+    } else {
+        ST7735_FillRect(x, y, BAR_W, 1, COL_BG);
     }
 }
 
