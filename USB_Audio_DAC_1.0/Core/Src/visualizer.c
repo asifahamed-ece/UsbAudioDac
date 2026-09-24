@@ -37,10 +37,10 @@
 #define BASELINE_Y     (BARS_TOP + MAX_BAR_H)        /* 114 == panel bottom */
 #define PANEL_BOTTOM   BASELINE_Y
 #define Y_BOTTOM       (BARS_TOP + MAX_BAR_H)        /* 114 */
-#define BAR_W          11
+#define BAR_W          9
 #define BAR_GAP        1
 #define MARGIN_X       4
-#define NBANDS         10
+#define NBANDS         12
 
 /* LED block geometry: 6 px lit block + 1 px black gap = 7 px unit.
  * 90 px column snaps to 12 full blocks (84 px), 6 px air at the top. */
@@ -70,31 +70,33 @@
 /* One rainbow color per bar column, left -> right. Evenly spaced hues
  * converted to RGB565. */
 static const uint16_t band_colors[NBANDS] = {
-    0xF800,   /* red          */
-    0xFCC0,   /* orange       */
-    0xCFE0,   /* chartreuse   */
-    0x37E0,   /* green        */
-    0x07EC,   /* spring green */
-    0x07FF,   /* cyan         */
-    0x033F,   /* azure        */
-    0xC81F,   /* blue-violet  */
-    0x301F,   /* violet       */
-    0xF80C    /* pink         */
+    0xF800,   /* red            */
+    0xFCC0,   /* orange         */
+    0xCFE0,   /* chartreuse     */
+    0x37E0,   /* green          */
+    0x07EC,   /* spring green   */
+    0x07FF,   /* cyan           */
+    0x033F,   /* azure          */
+    0xC81F,   /* blue-violet    */
+    0x301F,   /* violet         */
+    0xF80C,   /* pink           */
+    0xF80F,   /* magenta        */
+    0xF950    /* neon pink      */
 };
 
-/* Merge the FFT's 16 log-spaced bands down to 10 display columns so the
- * whole 172 Hz -> ~14 kHz range is still shown. Each display band uses
- * the louder of its two source bands (max keeps kick peaks). */
-static const uint8_t merge_lo[NBANDS] = { 0, 1,  2,  3,  4, 6,  8, 10, 12, 14 };
-static const uint8_t merge_hi[NBANDS] = { 0, 1,  2,  3,  5, 7,  9, 11, 13, 15 };
+/* The FFT now emits exactly the 12 on-screen perceptual columns, so the
+ * merge is a 1:1 passthrough (kept as a table so band pairing stays
+ * trivial to change later). Left = bass, right = highs. */
+static const uint8_t merge_lo[NBANDS] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+static const uint8_t merge_hi[NBANDS] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
 
 /* Bar ballistics: per-frame lerp factors. Rise is caught fast but not
  * teleported; fall relaxes for a smooth tumbling drop. */
 #define VIS_ATTACK_UP   0.35f
 #define VIS_ATTACK_DOWN 0.15f
 
-/* State (bands[] must match the FFT's own 16-band width for the
- * AudioFFT_Process call; NBANDS is the on-screen column count). */
+/* State (bands[] is the FFT's 12 perceptual bands — a 1:1 match with
+ * the NBANDS screen columns, so no down-sampling happens). */
 static uint8_t  rendered_h[NBANDS];       /* last drawn (snapped) height */
 static uint8_t  peak_h[NBANDS];           /* peak-hold height */
 static uint8_t  peak_counter[NBANDS];     /* hold frames remaining */
@@ -221,9 +223,9 @@ void Visualizer_Init(void)
 
     /* Spectrum panel: dark frame, black interior, baseline, freq labels. */
     draw_panel_frame();
-    ST7735_DrawString(6, 120, "60", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(56, 120, "1k", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(104, 120, "16k", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(6, 120, "40", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(40, 120, "1k", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(104, 120, "12k", COL_TEXT_DIM, COL_BG);
 
     /* Reset state */
     for (i = 0; i < NBANDS; i++) {

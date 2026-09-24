@@ -1,6 +1,7 @@
 /* Core/Src/audio_fft.c
  *
- * 256-point real FFT → 16 log-spaced band heights for the TFT visualizer.
+ * 1024-point real FFT → 12 perceptual band heights for the TFT
+ * visualizer (2 bass / 6 mid / 4 high, ~43 Hz → ~12 kHz, log-spaced).
  *
  * CONCURRENCY (I2S DMA ISR vs main loop)
  * ---------------------------------------
@@ -18,18 +19,19 @@
  *
  * MEMORY
  * ------
- *   Working buffers live in .ccmram (CPU-only, outside the 128 KB SRAM
- *   budget). CCMRAM is NOLOAD — AudioFFT_Init must zero every buffer;
- *   startup does not clear it. None of these buffers are DMA-reachable.
+ *   All working buffers live in normal SRAM .bss (STM32F411 has no
+ *   CCMRAM). Startup clears .bss; AudioFFT_Init still zeroes every
+ *   buffer explicitly. None of these buffers are DMA-reachable.
  *
  *   PutSamples is an integer O(n) tap only: no float, no FFT.
  *
  * MAPPING
  * -------
- *   Per-frame peak normalization: magnitudes are divided by the frame's
- *   peak bin before the dB map, so Hann leakage stays a fixed number of
- *   dB below the tone at any absolute level (full-scale vs quiet). A
- *   linear dB window of AUDIO_FFT_DB_RANGE maps [−RANGE, 0] dB → [0, 90].
+ *   Absolute-dBFS band mapping (see AUDIO_FFT_FULL_SCALE below). A
+ *   linear dB window of AUDIO_FFT_DB_RANGE maps [−RANGE, 0] dB →
+ *   [0, 90]. The 4 high bands (>= ~4 kHz) get a +6 dB presence lift
+ *   (band_presence[]) so music's naturally quieter highs animate —
+ *   the display is hearing-focused, not a flat analyzer.
  */
 
 #include "audio_fft.h"
@@ -68,12 +70,23 @@ static volatile uint8_t write_idx;
 static volatile uint8_t frame_ready;
 static uint16_t fill_count;   /* ISR-owned only */
 
-/* Design-spec band edges (60 Hz → 17.5 kHz) as bin indices at
- * Fs = 44100 Hz, N = 256 (df ≈ 172.27 Hz). Band 0 starts at bin 1
- * (skips DC); band 5 holds bin 6 ≈ 1034 Hz (the 1 kHz tone). */
+/* Perceptual band edges (~43 Hz → 12 kHz) as bin indices at
+ * Fs = 44100 Hz, N = 1024 (df ≈ 43.07 Hz), log-ish spaced and weighted
+ * toward human hearing: 2 bass (43–301 Hz, a 60 Hz floor is resolvable),
+ * 6 mids (301 Hz–4 kHz, most musical energy), 4 highs (4–12 kHz; the old
+ * dead 17 kHz top band is gone). Band 0 starts at bin 1 (skips DC);
+ * band 4 covers bins 22–32 ≈ 947–1378 Hz (a 1 kHz tone lands here). */
 static const uint16_t band_start[AUDIO_FFT_BANDS + 1U] = {
-    1U, 2U, 3U, 4U, 5U, 6U, 7U, 10U,
-    13U, 18U, 24U, 31U, 40U, 52U, 66U, 82U, 102U
+    1U, 4U, 7U, 14U, 22U, 33U, 49U, 71U, 94U, 131U, 181U, 241U, 281U
+};
+
+/* Presence lift (dB) applied /after/ the dB calculation for bands above
+ * ~4 kHz. Music is naturally quiet up there; +6 dB keeps the high
+ * columns alive without distorting the bass/mid bands around them.
+ * It is a 1:1 per-band table so it is easy to tune. */
+static const float band_presence[AUDIO_FFT_BANDS] = {
+    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+    6.0f, 6.0f, 6.0f, 6.0f
 };
 
 void AudioFFT_Init(void)
@@ -105,7 +118,7 @@ void AudioFFT_Init(void)
                                               (float)(AUDIO_FFT_N - 1U)));
     }
 
-    /* N=256 is a supported RFFT size; init cannot fail for this build. */
+    /* N=1024 is a supported RFFT size; init cannot fail for this build. */
     (void)arm_rfft_fast_init_f32(&rfft_instance, (uint16_t)AUDIO_FFT_N);
 }
 
@@ -166,8 +179,9 @@ void AudioFFT_Process(uint8_t out_bands[AUDIO_FFT_BANDS])
                 /* Level relative to full scale (0 dBFS = full bar). */
                 float ratio = avg / AUDIO_FFT_FULL_SCALE;
                 if (ratio >= 1.0e-10f) {
-                    /* Map [−RANGE, 0] dBFS → [0, MAX_HEIGHT]. */
-                    float db = 20.0f * log10f(ratio);
+                    /* Map [−RANGE, 0] dBFS → [0, MAX_HEIGHT].
+                     * High bands get a perceptual presence lift. */
+                    float db = 20.0f * log10f(ratio) + band_presence[b];
                     target = (db + AUDIO_FFT_DB_RANGE) *
                              ((float)AUDIO_FFT_MAX_HEIGHT /
                               AUDIO_FFT_DB_RANGE);
