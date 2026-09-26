@@ -207,7 +207,9 @@ UsbAudioDac/
 | 6 | FreeRTOS integration (4 tasks: Audio, Display, Encoder, Debug) | ⏳ Planned |
 | 7 | Polish, enclosure, final documentation | ⏳ Planned |
 
-### Key Debugging Stories
+> Phase 5 is built, flashed and verified on the glass, but lives on
+> `feat/boot-splash-horizon` and has **not** been merged to `main` yet. `main`
+> still contains a deleted 5x7 font — don't flash a build made from `main`.
 
 The device enumerated correctly and played nothing, repeatedly. Four independent
 bugs hid behind that one symptom — a bad VBUS sense line, a sample rate declared
