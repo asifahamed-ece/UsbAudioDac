@@ -8,6 +8,77 @@ STM32F411 USB Audio Player — block-by-block learning log.
 
 ### [Unreleased]
 
+**2026-09-26 — Exact 48 kHz sample rate (fixes the periodic zero-gap "tap")**
+
+- **Root cause.** PLLI2S was `M=25, N=192, R=2` → I2SCLK 96 MHz, so `HAL_I2S_Init` chose
+  `I2SDIV=34, ODD=0` → real Fs = **44 117.647 Hz** while USB declared **44 100 Hz**. That is
+  **+400 ppm**: the I2S consumed 17.6 samples/s more than the host delivered, so the 2048-sample
+  ring slowly drained and each DMA refill came up short. `AudioI2S_RefillHalfA/B` zeroes the
+  unfilled tail, so every short refill became a **zero-gap at the buffer rate — 100.27 Hz
+  (10 ms full buffer) / 200.53 Hz (5 ms half buffer)**. That is the "periodic thud/tap, several
+  times a second" symptom. There was no way for the host to correct it: the streaming interface
+  declares only the OUT endpoint (no feedback EP `0x81`) and `USBD_AUDIO_SOF` is a no-op stub,
+  so the `Sof_enable = ENABLE` from the earlier fix was inert.
+- **Why not 44.1 kHz.** An exhaustive search over every legal PLLI2S divisor
+  (`M` 2–63, `N` 50–432, `R` 2–7, VCO input 0.95–2.10 MHz, `k = 2·I2SDIV+ODD` ∈ [4,511])
+  found **zero** solutions for 44 100 Hz. `I2SCLK` would have to be an exact multiple of
+  1 411 200 Hz, but from a 25 MHz HSE `I2SCLK = 25·N/(M·R)` is a ratio of small integers and can
+  never land on that lattice. The same search found **three** exact solutions for 48 000 Hz.
+- **Fix — switch the device to exactly 48 000 Hz:**
+  - `Core/Src/stm32f4xx_hal_msp.c`: `PLLI2SN` 192 → **384** (VCO 384 MHz, I2SCLK 192 MHz).
+    In spec per datasheet Table 42: `fVCO_OUT` 100–432 MHz, `fPLLI2S_OUT` max 216 MHz,
+    `fPLLI2S_IN` 1 MHz.
+  - `Core/Src/main.c`: `I2S_AUDIOFREQ_44K` → `I2S_AUDIOFREQ_48K` ⇒ HAL picks `I2SDIV=62, ODD=1`.
+    **Fs = 192 MHz / (32 × 125) = 48 000.000000 Hz, drift 0.000 samples/s.**
+  - `USB_DEVICE/Target/usbd_conf.h`: `USBD_AUDIO_FREQ` 44100U → **48000U**.
+  - `usbd_audio.h`: `AUDIO_OUT_PACKET_MAX` 90U → **96U**. `AUDIO_OUT_PACKET` → 96 and
+    `AUDIO_TOTAL_BUF_SIZE` → 7680 derive automatically.
+  - `Core/Src/audio_i2s.c`: `GEN_SR` → 48000.0f so the `dbg_bypass_usb` isolation tone stays
+    correct.
+  - `.ioc`: `RCC.PLLI2SN=384`, `I2S2.AudioFreq`, `RealAudioFreq=48 KHz`, `ErrorAudioFreq=0.00 %`,
+    `USBD_AUDIO_FREQ=48000`, plus derived `I2SClocksFreq_Value`/`VCOI2SOutputFreq_Value`/
+    `VcooutputI2S` — so CubeMX regeneration cannot revert this. Also corrected
+    `USB_OTG_FS.Sof_enable` in the `.ioc` (`DISABLE` → `ENABLE`); it disagreed with
+    `usbd_conf.c` and would have silently reverted the earlier SOF fix on regeneration.
+- **Side benefit.** At 48 kHz, USB FS `bInterval=1` gives exactly 48 samples = **96 bytes every
+  millisecond, every frame** — the 44.1 kHz 88/90 "long frame" alternation (the original cause of
+  the `wMaxPacketSize` mismatch) no longer exists, and `AUDIO_OUT_PACKET_MAX` is exact.
+- **Verification.** `make clean && make` → 0 warnings; `make test` → 5227 + 31 checks, 0 failures.
+  Descriptor decoded from the linked image: mono, 16-bit, **bSamFreq = 48000**,
+  **wMaxPacketSize = 96**, `bInterval = 1`, `bNumEndpoints = 1`; no trace of 44100 or the old
+  90-byte endpoint.
+- **Result on hardware (2026-09-26, "Standard recording 6.mp3", 61.9 s): the periodic thuds are
+  gone.** Analysis of the new recording found **zero dropouts, zero click events after the first
+  250 ms, and no silence gaps** across 61.9 s of playback (the only silent span is the 89 ms
+  before playback started). Peak measured 3rd harmonic also improved from ≈ −2 dB to a median of
+  −18 dB relative to the fundamental.
+- **Two symptoms remain, both attributable to the phone's recorder, not the firmware:**
+  1. *Amplitude highs/lows.* The level is modulated at **0.162 Hz (6.2 s period)**, and the
+     modulation is **identical in the Left and Right channels** — the signature of a recorder
+     AGC. A DAC/USB fault would either be far faster (tied to the 4.58 ms refill) or would
+     differ between the two mics.
+  2. *3 kHz harmonics.* Harmonic ratios measure exactly 1 : 2.0000 : 2.9998 : 3.9998 : 5.0002,
+     so it is genuine non-linear distortion, not intermodulation. But its level **switches
+     between +10 dB and −45 dB relative to the fundamental on a 0.5–2 s timescale**, and the
+     "clean" windows (e.g. 47.5–53.3 s, 3rd harmonic at −38…−46 dB) are entirely normal for a
+     Class-D amp. Decisively, across 83 windows the distortion was in **both channels in 59 %**
+     and in **Left only in 41 %, and in Right only in 0 %** — a single-sided pattern that a
+     mono DAC→amp→speaker path cannot produce, since the firmware writes bit-identical samples
+     to L and R (`audio_i2s_buffer[2i] = audio_i2s_buffer[2i+1]`). A 3rd harmonic *louder than
+     the fundamental* is a hard square-wave clip, i.e. a limiter — not a Class-D amplifier at
+     −25 dBFS.
+  → **Next diagnostic (needs hardware):** `dbg_bypass_usb = 1` over SWD makes the MCU emit a
+  mathematically pure 1 kHz sine through the identical DMA→I2S2→MAX98357A→speaker path. If the
+  3rd harmonic and the level wander still appear in the recording, they are conclusively the
+  phone. Also read `dbg_partial_count` / `dbg_min_read` for objective confirmation of this fix.
+  → **Cheap control:** record a laptop or phone speaker playing the same file with the same phone
+  at the same distance.
+- **Known follow-ups (not in this change):** (a) `audio_fft.c`'s 12-band table is indexed in bins,
+  so at 48 kHz `df` goes 43.07 → 46.875 Hz and the visualizer bands shift ~8.8 % in frequency;
+  (b) `HAL_I2S_TxHalfCpltCallback` still runs `USBD_AUDIO_Sync` (up to 1760 samples, scalar copy)
+  plus the refill at NVIC priority 0 every ~4.6 ms — a ~300 µs window with USB and SysTick
+  masked.
+
 **2026-09-23 — USB Audio stability, buffer overrun fix & TFT visualizer**
 
 - **USB Audio Circular Buffer Overrun & Screeching Fix** (`usbd_audio.h`, `usbd_audio.c`):

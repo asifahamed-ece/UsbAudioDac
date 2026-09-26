@@ -32,14 +32,15 @@ make clean              # Clean
 These caused silent failures (device enumerates but no audio) or crashes/screeching:
 
 1. **VBUS sensing** — Black Pill's PA9/VBUS line unreliable. Must set `vbus_sensing_enable = DISABLE` in `USB_DEVICE/Target/usbd_conf.c:342`.
-2. **Sample rate mismatch** — `USBD_AUDIO_FREQ` in `usbd_conf.h` must equal the `.ioc` value (44100). Hardcoded 48000U causes ring over/underrun → silence.
+2. **Sample rate mismatch** — `USBD_AUDIO_FREQ` in `usbd_conf.h` must equal the `.ioc` value (**48000**), which must in turn equal the *real* I2S2 rate. The device now runs an exact 48 kHz (see gotcha 6); a hardcoded value that disagrees with either causes ring over/underrun → silence, or slow drain → periodic zero-gap "taps".
 3. **Missing `USBD_AUDIO_Sync` call** — ST library exports this but never calls it. Must invoke from I2S DMA callbacks in `Core/Src/stm32f4xx_it.c`. Order: (1) `HalfTransfer_CallBack_FS()`/`TransferComplete_CallBack_FS()`, then (2) `AudioI2S_RefillHalfA/B()`.
-4. **USB Audio OUT buffer spill pad & modulo wrap** — 44.1 kHz USB packets oscillate between 88 and 90 bytes (`AUDIO_OUT_PACKET_MAX = 90U`). The HAL linearly writes up to 90 bytes into `haudio->buffer[wr_ptr]`. Without `+ AUDIO_OUT_PACKET_MAX` padding at the end of `buffer[]`, writes near the logical end (`AUDIO_TOTAL_BUF_SIZE = 7040`) corrupt the struct's `rd_ptr`/`wr_ptr`/`control` fields, causing loud screeching and hard faults. Additionally, `wr_ptr` must wrap modulo (`wr_ptr -= AUDIO_TOTAL_BUF_SIZE`) instead of snapping to 0.
+4. **USB Audio OUT buffer spill pad & modulo wrap** — the HAL linearly writes up to `AUDIO_OUT_PACKET_MAX` bytes into `haudio->buffer[wr_ptr]`. Without `+ AUDIO_OUT_PACKET_MAX` padding at the end of `buffer[]`, writes near the logical end (`AUDIO_TOTAL_BUF_SIZE = 7680` at 48 kHz) corrupt the struct's `rd_ptr`/`wr_ptr`/`control` fields, causing loud screeching and hard faults. Additionally, `wr_ptr` must wrap modulo (`wr_ptr -= AUDIO_TOTAL_BUF_SIZE`) instead of snapping to 0. (At 44.1 kHz this was 88/90 bytes because of the 1-in-10 "long frame"; at 48 kHz every frame is exactly 96 bytes, so `AUDIO_OUT_PACKET_MAX = 96U` is exact, but the padding requirement is unchanged.)
+6. **Exact 44.1 kHz is impossible on this board** — see README → Clock Configuration. The device is 48 kHz exact by design. Don't "fix" a rate problem by editing only `usbd_conf.h`; the real rate comes from `PLLI2SN/PLLI2SR` in `stm32f4xx_hal_msp.c` plus `I2S_AUDIOFREQ_48K` in `main.c`, and all three (plus the `.ioc`) must agree.
 5. **No CCMRAM on STM32F411** — Unlike F405/F407, STM32F411 has no CCMRAM at `0x10000000`. Accessing this address immediately generates a BusFault/HardFault. All SRAM must reside in standard SRAM at `0x20000000`.
 
 ## I2S Pins & Clocks
 
-Pin mappings (I2S2: **PB10=CK, PB12=WS, PB15=SD**, AF5 — not PB13) and the full clock tree (HSE 25 MHz → 48 MHz SYSCLK/USB, PLLI2S 96 MHz → real I2S rate 44.117 kHz) are single-sourced in **README.md → Wiring / Clock Configuration**.
+Pin mappings (I2S2: **PB10=CK, PB12=WS, PB15=SD**, AF5 — not PB13) and the full clock tree (HSE 25 MHz → 48 MHz SYSCLK/USB, PLLI2S 192 MHz → real I2S rate 48 000.000 Hz exact) are single-sourced in **README.md → Wiring / Clock Configuration**.
 
 ## CubeMX Code Generation
 
@@ -59,12 +60,12 @@ Pin mappings (I2S2: **PB10=CK, PB12=WS, PB15=SD**, AF5 — not PB13) and the ful
 | `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_audio_if.c` | USB audio → ring buffer bridge |
 | `USB_Audio_DAC_1.0/USB_DEVICE/App/usbd_desc.c` | USB device/configuration descriptors |
 | `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.c` | HAL PCD init, VBUS sensing disabled |
-| `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.h` | `USBD_AUDIO_FREQ = 44100U` |
+| `USB_Audio_DAC_1.0/USB_DEVICE/Target/usbd_conf.h` | `USBD_AUDIO_FREQ = 48000U` |
 
 ## Audio Pipeline
 
 ```
-PC → USB OTG FS (88-byte packets, 1 ms) → usbd_audio_if.c → ring_buffer.c (SPSC, 23 ms) → audio_i2s.c → DMA1 Stream 4 → I2S2 → MAX98357A → speaker
+PC → USB OTG FS (96-byte packets, 1 ms) → usbd_audio_if.c → ring_buffer.c (SPSC, 2048 samples) → audio_i2s.c → DMA1 Stream 4 → I2S2 → MAX98357A → speaker
 ```
 
 ## Testing
@@ -74,7 +75,7 @@ PC → USB OTG FS (88-byte packets, 1 ms) → usbd_audio_if.c → ring_buffer.c 
 lsusb -v | grep -A 10 "Audio"
 
 # Test with 1 kHz sine tone
-speaker-test -D plughw:2,0 -c 1 -r 44100 -t sine -f 1000
+speaker-test -D plughw:2,0 -c 1 -r 48000 -t sine -f 1000
 
 # Play a WAV file
 aplay -D plughw:2,0 your_audio.wav

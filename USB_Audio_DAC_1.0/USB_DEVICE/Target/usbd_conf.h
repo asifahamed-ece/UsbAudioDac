@@ -75,7 +75,13 @@
 /*---------- -----------*/
 #define USBD_SELF_POWERED     1U
 /*---------- -----------*/
-#define USBD_AUDIO_FREQ     44100U
+/* Audio sample frequency declared in the streaming interface descriptor
+ * (bSamFreq) and used to derive AUDIO_OUT_PACKET.
+ * MUST equal the real I2S2 output rate, otherwise the ring buffer slowly
+ * drains/fills and each DMA refill comes up short -> zero-gap "taps".
+ * 48000 matches the PLLI2S setup in stm32f4xx_hal_msp.c exactly
+ * (I2SCLK 192 MHz, I2SDIV=62, ODD=1 -> 48000.000000 Hz, zero drift). */
+#define USBD_AUDIO_FREQ     48000U
 
 /****************************************/
 /* #define for FS and HS identification */

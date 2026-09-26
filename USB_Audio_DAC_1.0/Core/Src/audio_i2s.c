@@ -55,7 +55,10 @@ int16_t audio_i2s_buffer[AUDIO_I2S_BUFFER_SIZE] = {0};
  * ==========================================================================*/
 volatile uint8_t dbg_bypass_usb = 0U;
 #define GEN_FREQ_HZ    1000.0f
-#define GEN_SR         44100.0f
+/* Must match the real I2S2 rate (see PLLI2S setup in stm32f4xx_hal_msp.c),
+ * otherwise the generated tone's pitch is wrong and the isolation test
+ * misleads. 48000 Hz exactly. */
+#define GEN_SR         48000.0f
 #define GEN_AMP        9000
 static uint32_t gen_phase = 0U;
 

@@ -22,13 +22,13 @@
  *
  * SIZING
  * ------
- *   2048 samples * (1 / 44100 Hz) = 46.4 ms of audio.
- *   USB Full-Speed sends 1 packet (44 samples) every 1 ms, so
- *   the ring holds ~46 packets of headroom. If the I2S consumer
- *   ever stalls for 46 ms without new USB packets, we underrun.
+ *   2048 samples * (1 / 48000 Hz) = 42.7 ms of audio.
+ *   USB Full-Speed sends 1 packet (48 samples) every 1 ms, so
+ *   the ring holds ~42 packets of headroom. If the I2S consumer
+ *   ever stalls for 42 ms without new USB packets, we underrun.
  *
  *   Sized >= the largest single sync push: USBD_AUDIO_Sync clamps its
- *   per-sync copy to AUDIO_TOTAL_BUF_SIZE/2 (1760 mono samples), and
+ *   per-sync copy to AUDIO_TOTAL_BUF_SIZE/2 (3840 mono samples), and
  *   AUDIO_AudioCmd_FS(PLAY) caps at RING_BUFFER_SIZE-1.  Keeping the
  *   ring >= that worst case + backpressure in Sync (only consume what
  *   the ring can accept) makes the path lossless instead of silently

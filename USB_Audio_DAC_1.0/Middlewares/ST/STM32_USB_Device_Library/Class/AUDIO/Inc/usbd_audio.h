@@ -106,12 +106,14 @@ extern "C" {
 
 
 #define AUDIO_OUT_PACKET                              (uint16_t)(((USBD_AUDIO_FREQ * 2U) / 1000U))
-/* Largest single OUT packet this mono 44.1 kHz stream receives: nominal
- * 88 bytes, but the "long frame" every 10 ms carries 90 bytes (45 samples,
- * 9x44 + 1x45 per 441 samples).  wMaxPacketSize / EP / PrepareReceive must
- * handle 90 so the long frame is not clipped (was silently dropping 1
- * sample every 10 ms -> a 100 Hz glitch on a steady tone). */
-#define AUDIO_OUT_PACKET_MAX                          90U
+/* Largest single OUT packet this mono stream receives.
+ * At 48 kHz with bInterval=1 (USB FS = 1000 frames/s) every frame carries
+ * exactly 48000/1000 = 48 samples = 96 bytes, so this is exact, NOT a
+ * "long frame" headroom value like the old 44.1 kHz case needed
+ * (88 nominal + 90 on the 1-in-10 long frame, which used to silently drop
+ * 1 sample every 10 ms -> a 100 Hz glitch on a steady tone).
+ * Keep AUDIO_OUT_PACKET_MAX >= AUDIO_OUT_PACKET. */
+#define AUDIO_OUT_PACKET_MAX                          96U
 #define AUDIO_DEFAULT_VOLUME                          70U
 
 /* Number of sub-packets in the audio transfer buffer. You can modify this value but always make sure

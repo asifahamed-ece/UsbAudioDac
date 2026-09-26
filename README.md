@@ -18,7 +18,7 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 ## Features
 
 - **USB Audio Class 1.0** — Plug-and-play USB speaker on Linux, Windows, macOS
-- **44.1 kHz / 16-bit / Mono** audio over USB isochronous endpoint
+- **48 kHz / 16-bit / Mono** audio over USB isochronous endpoint (exact rate; see Clock Configuration)
 - **I2S + DMA** output to MAX98357A DAC + 3 W Class D amplifier
 - **Lock-free SPSC ring buffer** — 23 ms of audio headroom between USB and I2S
 - **Rotary encoder volume control** via software gain + mute button (Phase 4)
@@ -90,11 +90,11 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 ```
 PC (USB audio source)
     │
-    │  USB Full-Speed (12 Mbps, 44.1 kHz 16-bit mono)
+    │  USB Full-Speed (12 Mbps, 48 kHz 16-bit mono)
     ▼
 STM32F411 Black Pill
     │
-    ├── USB OTG FS ─────── receives 88-byte packets (44 samples) every 1 ms
+    ├── USB OTG FS ─────── receives 96-byte packets (48 samples) every 1 ms, exactly
     │       │
     │       ▼
     │   usbd_audio_if.c ── AUDIO_CMD_PLAY → RingBuffer_Write()
@@ -148,7 +148,7 @@ After flashing, connect the Black Pill to your PC via USB-C:
 lsusb -v | grep -A 10 "Audio"
 
 # Test with a 1 kHz sine tone
-speaker-test -D plughw:2,0 -c 1 -r 44100 -t sine -f 1000
+speaker-test -D plughw:2,0 -c 1 -r 48000 -t sine -f 1000
 
 # Play a WAV file
 aplay -D plughw:2,0 your_audio.wav
@@ -176,7 +176,7 @@ UsbAudioDac/
 │   │   │   └── usbd_desc.c        # USB device/configuration descriptors
 │   │   └── Target/
 │   │       ├── usbd_conf.c        # HAL PCD init, VBUS sensing disabled
-│   │       └── usbd_conf.h        # USBD_AUDIO_FREQ = 44100
+│   │       └── usbd_conf.h        # USBD_AUDIO_FREQ = 48000
 │   ├── tests/                     # Host-simulated ring-buffer unit tests
 │   ├── Drivers/                   # ST HAL + CMSIS (vendored)
 │   ├── Middlewares/               # ST USB Device Library (Audio class)
@@ -197,7 +197,7 @@ UsbAudioDac/
 | Phase | Focus | Status |
 |-------|-------|--------|
 | 0 | Toolchain setup, LED blink, UART "Hello World" | ✅ Complete |
-| 1 | Clock tree: HSE → PLL → 48 MHz SYSCLK, PLLI2S → 96 MHz I2S | ✅ Complete |
+| 1 | Clock tree: HSE → PLL → 48 MHz SYSCLK, PLLI2S → 192 MHz I2S (exact 48 kHz) | ✅ Complete |
 | 2 | I2S + DMA audio output (1 kHz test tone) | ✅ Complete |
 | 3 | USB Audio Class 1.0 device — PC plays music to speaker | ✅ Complete |
 | 3.5 | Reliability: CCMRAM + stack bump, host unit tests, IWDG watchdog | ✅ Complete |
@@ -211,7 +211,7 @@ UsbAudioDac/
 Phase 3 had three silent-failure bugs that each took an evening to track down — all caused the device to enumerate correctly but play no audio:
 
 1. **VBUS sensing** — Black Pill's PA9/VBUS line doesn't reliably trigger OTG FS comparator; fix was disabling `vbus_sensing_enable`
-2. **Sample rate mismatch** — Hardcoded `48000U` in `usbd_conf.h` overrode the .ioc's 44100 setting, causing ring over/underrun
+2. **Sample rate mismatch** — Hardcoded `48000U` in `usbd_conf.h` overrode the .ioc's 44100 setting, causing ring over/underrun. *Later found a subtler variant of the same class of bug: the declared 44 100 Hz never matched the I2S2 hardware rate of 44 117.6 Hz either (+400 ppm), which drained the ring slowly. The device now runs exact 48 kHz — see Clock Configuration.*
 3. **Missing `USBD_AUDIO_Sync` call** — ST's library exports this function but never calls it internally; user must invoke it from I2S DMA callbacks
 
 > See [PROGRESS.md](PROGRESS.md) for the full debugging story and lessons learned.
@@ -225,10 +225,24 @@ Phase 3 had three silent-failure bugs that each took an evening to track down �
 | HSE | 25 MHz | External crystal (PH0/PH1) |
 | SYSCLK | 48 MHz | PLL (M=25, N=384, P=DIV8) |
 | USB | 48 MHz | PLLQ=8 (exact for Full-Speed USB) |
-| I2S PLL | 96 MHz | PLLI2S (M=25, N=192, R=2) |
+| I2S PLL (I2SCLK) | 192 MHz | PLLI2S (M=25, N=384, R=2) → VCO 384 MHz, 192 MHz I2SCLK |
+| I2S sample rate | **48000 Hz exact** | HAL picks I2SDIV=62, ODD=1 → 192 MHz / (32 × 125). Zero drift vs the USB host. |
 | AHB | 48 MHz | Prescaler = 1 |
 | APB1 | 24 MHz | Prescaler = 2 |
 | APB2 | 48 MHz | Prescaler = 1 |
+
+> **Why 48 kHz and not 44.1 kHz:** 44 100 Hz is *mathematically unreachable* from a 25 MHz HSE
+> through PLLI2S. `I2SCLK` would have to be an exact multiple of 1 411 200 Hz, but from 25 MHz,
+> `I2SCLK = 25·N/(M·R)` with `N ≤ 432`, `M ≥ 13`, `R ≥ 2` — a ratio of small integers that can
+> never land on that lattice (verified by exhaustive search over all legal M/N/R). The old
+> 96 MHz setup gave **44 117.647 Hz** — a **+400 ppm** error against the declared 44 100 Hz,
+> i.e. the I2S consumed 17.6 samples/s more than the host delivered, so the ring buffer slowly
+> drained and every DMA refill came up short (zero-gap "taps", ~100/200 Hz).
+> At 48 kHz the USB packets are a clean **96 bytes every millisecond** (no 44.1 kHz-style
+> 88/90 "long frame" alternation) and the drain is exactly **0.000 samples/s**.
+> The other two exact-48 kHz solutions (`N=384,R=5` → 76.8 MHz; `N=192,R=5` → 38.4 MHz) were
+> rejected as low-divider / non-canonical. I2SCLK 192 MHz is within the datasheet's
+> `fPLLI2S_OUT` max of 216 MHz and VCO 384 MHz within `fVCO_OUT` 100–432 MHz (Table 42).
 
 ---
 
