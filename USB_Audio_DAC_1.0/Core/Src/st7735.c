@@ -25,6 +25,7 @@
 
 #include "st7735.h"
 #include "font8x8.h"
+#include "font5x7.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -297,6 +298,94 @@ void ST7735_DrawString(int16_t x, int16_t y, const char *str, uint16_t fg, uint1
 void ST7735_DrawString2x(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
 {
     ST7735_DrawStringScaled(x, y, str, fg, bg, 2);
+}
+
+/* Compact 5x7 text renderer over the COLUMN-major font in font5x7.h.
+ *
+ * The loop order here is the mirror image of ST7735_DrawStringScaled and
+ * that is deliberate, not a typo:
+ *   - font8x8 is ROW-major (one byte per row)      -> emit row outer / col inner
+ *   - font5x7 is COLUMN-major (one byte per column) -> emit col outer / row inner
+ * The ST7735 always fills a RAM window with X incrementing fastest, so in
+ * both cases the OUTER loop must be the one the font is indexed by.
+ * Getting this backwards transposes every glyph (the exact regression the
+ * host tests test_font_render / test_font5x7 exist to catch).
+ *
+ * Advance is 6 px: a 5 px glyph plus a 1 px gap. The trailing gap after
+ * the last character is not drawn, so a centred string's width is
+ * n*ST7735_ADVANCE5X7 - 1). */
+void ST7735_DrawString5x7(int16_t x, int16_t y, const char *str, uint16_t fg, uint16_t bg)
+{
+    int16_t cx = x;
+    uint8_t buf[ST7735_GLYPH5X7_W * ST7735_GLYPH5X7_H * 2]; /* one glyph, BE-packed */
+    int16_t glyph_w = (int16_t)ST7735_GLYPH5X7_W;
+    int16_t glyph_h = (int16_t)ST7735_GLYPH5X7_H;
+
+    if (str == NULL)
+    {
+        return;
+    }
+
+    while (*str != '\0')
+    {
+        unsigned char c = (unsigned char)*str++;
+        const uint8_t *glyph;
+        int16_t x0, y0, x1, y1;
+        int16_t col, row;
+        uint32_t n = 0U;
+
+        if (c < 32U || c > 126U)
+        {
+            c = '?'; /* replace out-of-range with '?' */
+        }
+        glyph = font5x7[c - 32U];
+
+        /* Visible sub-rectangle of this glyph (clip to screen). */
+        x0 = (cx < 0) ? 0 : cx;
+        y0 = (y  < 0) ? 0 : y;
+        x1 = (int16_t)(cx + glyph_w - 1);
+        y1 = (int16_t)(y + glyph_h - 1);
+        if (x1 > ST7735_WIDTH - 1)  { x1 = ST7735_WIDTH - 1; }
+        if (y1 > ST7735_HEIGHT - 1) { y1 = ST7735_HEIGHT - 1; }
+
+        if ((x0 <= x1) && (y0 <= y1))
+        {
+            /* One address window per character; stream only visible pixels
+             * so the byte count always matches the window size. */
+            SetAddressWindow(x0, y0, x1, y1);
+
+            for (col = x0; col <= x1; col++)
+            {
+                uint8_t bits = glyph[col - cx];
+                for (row = y0; row <= y1; row++)
+                {
+                    uint16_t color = ((bits >> (row - y)) & 0x01U) ? fg : bg;
+                    pack_be(color, &buf[n]);
+                    n += 2U;
+                }
+            }
+            ST7735_WriteData(buf, (uint16_t)n);
+        }
+        cx = (int16_t)(cx + ST7735_ADVANCE5X7);
+    }
+}
+
+/* Centered horizontally using the 5x7 metrics (5 px glyph + 1 px gap,
+ * no trailing gap). */
+void ST7735_DrawStringCentered5x7(int16_t y, const char *str, uint16_t fg, uint16_t bg)
+{
+    int16_t w;
+
+    if (str == NULL)
+    {
+        return;
+    }
+    w = (int16_t)((strlen(str) * ST7735_ADVANCE5X7) - 1);
+    if (w > ST7735_WIDTH)
+    {
+        w = ST7735_WIDTH;
+    }
+    ST7735_DrawString5x7((int16_t)((ST7735_WIDTH - w) / 2), y, str, fg, bg);
 }
 
 /* Centered horizontally (assuming font glyph width = 8 * scale). */

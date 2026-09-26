@@ -22,8 +22,19 @@
 #include "visualizer.h"
 #include "st7735.h"
 #include "audio_fft.h"
+#include "usbd_conf.h"
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
+
+/* The rate shown on screen is derived from the ONE constant that defines
+ * it, so the display can never disagree with the descriptor again. (It
+ * did: the header and splash were hardcoded to "44.1k" after the device
+ * moved to 48 kHz.) USBD_AUDIO_FREQ is 48000, so this yields "48". */
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+#define UI_RATE_NUM   STR(USBD_AUDIO_FREQ / 1000)          /* "48"        */
+#define UI_RATE_SHORT UI_RATE_NUM "k"                      /* "48k"       */
+#define UI_RATE_LONG  UI_RATE_NUM ".0 kHz"                 /* "48.0 kHz"  */
 
 /* Layout (Max bar height is pinned to the FFT's own cap so the
  * differential renderer can never draw outside the panel). */
@@ -33,20 +44,56 @@
 #define PANEL_RIGHT    125     /* panel frame right */
 #define PANEL_TOP      20      /* panel frame top   */
 #define BARS_TOP       24      /* first pixel row of bar area */
-#define MAX_BAR_H      AUDIO_FFT_MAX_HEIGHT          /* 90 */
-#define BASELINE_Y     (BARS_TOP + MAX_BAR_H)        /* 114 == panel bottom */
+#define MAX_BAR_H      AUDIO_FFT_MAX_HEIGHT          /* 84 = 12 x 7 blocks */
+#define BASELINE_Y     (BARS_TOP + MAX_BAR_H)        /* 108 == panel bottom */
 #define PANEL_BOTTOM   BASELINE_Y
-#define Y_BOTTOM       (BARS_TOP + MAX_BAR_H)        /* 114 */
+#define Y_BOTTOM       (BARS_TOP + MAX_BAR_H)        /* 108 */
 #define BAR_W          9
 #define BAR_GAP        1
 #define MARGIN_X       4
 #define NBANDS         12
 
+/* Region label strip.
+ *
+ * The panel's last 3 logical rows (125..127) are written to GRAM rows
+ * 128..130 through ST7735_ROWSTART and are NOT visible on the glass, so
+ * anything drawn there is silently half-cut. The old labels sat at y=120
+ * (rows 120..127) and were clipped by exactly that. The strip is placed
+ * so the whole 7-row glyph ends at row 119, leaving 8 rows of margin.
+ *
+ * MAX_BAR_H was reduced 90 -> 84 to make room: 84 is exactly 12 LED
+ * blocks of 7 px, which also removes the 6 px "air" row the old 90 px
+ * stack left at the top of a full column. */
+#define LABEL_SEP_Y    110     /* 1 px divider between panel and labels */
+#define LABEL_Y        113     /* rows 113..119, clear of the clipped 125..127 */
+#define LABEL_MAX_Y    (LABEL_Y + ST7735_GLYPH5X7_H - 1)  /* 119 */
+
+/* Compile-time guard: fail the build rather than ship a clipped label
+ * strip. A negative array size is a constraint violation, i.e. an error.
+ * This is the regression that put the old "Lows/Mids/Highs" text at y=120,
+ * where its bottom rows were written to GRAM rows the panel never shows. */
+typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1];
+
+/* Label x positions, centred under the band groups the FFT actually
+ * produces (2 bass / 6 mid / 4 high at 48 kHz: 47-328, 328-3328,
+ * 4406-13172 Hz). Bar i spans x = MARGIN_X + i*(BAR_W+BAR_GAP) and is
+ * BAR_W wide, so its centre is 8 + i*10.
+ *   bass  bands 0-1  -> centres 8,18   -> group centre 13
+ *   mid   bands 2-7  -> centres 28..78 -> group centre 53
+ *   high  bands 8-11 -> centres 88..118-> group centre 103
+ * A 5x7 glyph advances 6 px, so a string of n chars is n*6-1 wide. */
+#define LABEL_LO_X     4       /* 3 chars = 17 px, centred on 13 */
+#define LABEL_MID_X    44      /* 3 chars = 17 px, centred on 53 */
+#define LABEL_HI_X     97      /* 2 chars = 11 px, centred on 103 */
+
 /* LED block geometry: 6 px lit block + 1 px black gap = 7 px unit.
- * 90 px column snaps to 12 full blocks (84 px), 6 px air at the top. */
+ * MAX_BAR_H is 84 = 12 whole blocks, so a full column is exactly 12 blocks
+ * with no partial "air" row at the top (the old 90 px stack left 6 px of
+ * dead space above the twelfth block). */
 #define BLOCK_H        6
 #define BLOCK_GAP      1
 #define BLOCK_UNIT     (BLOCK_H + BLOCK_GAP)         /* 7 */
+#define BLOCKS_FULL    (MAX_BAR_H / BLOCK_UNIT)      /* 12 */
 
 /* Boot animation pacing: 46 steps x 38 ms ~= 1.75 s + 150 ms READY. */
 #define BOOT_STEP_DELAY_MS  38
@@ -173,7 +220,7 @@ static void show_boot_animation(void)
     /* Centered title stack: 2x main word, 1x subtitle + spec line. */
     ST7735_DrawStringCentered(24, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
     ST7735_DrawStringCentered(46, "SYNTHWAVE", COL_UPPER, COL_BG, 1);
-    ST7735_DrawStringCentered(58, "44.1 kHz / I2S", COL_TEXT_DIM, COL_BG, 1);
+    ST7735_DrawStringCentered(58, UI_RATE_LONG " / I2S", COL_TEXT_DIM, COL_BG, 1);
 
     /* Dark panel + frame behind the progress bar. */
     ST7735_FillRect(bar_start_x - 1, bar_start_y - 1, bar_width + 2,
@@ -218,14 +265,21 @@ void Visualizer_Init(void)
     /* RescuePulse-style header band with centered device title. */
     ST7735_FillRect(0, 0, ST7735_WIDTH, HEADER_H, COL_PANEL);
     ST7735_DrawString(4, 4, "USB AUDIO", COL_TEXT, COL_PANEL);
-    ST7735_DrawString(84, 4, "44.1k", COL_TEXT_DIM, COL_PANEL);
+    /* Right-aligned with a 4 px margin, mirroring "USB AUDIO"'s left margin
+     * (a fixed x=84 left a lopsided gap once the label shrank to 3 chars). */
+    ST7735_DrawString((int16_t)(ST7735_WIDTH - 4 - (int16_t)(sizeof(UI_RATE_SHORT) - 1) * 8),
+                      4, UI_RATE_SHORT, COL_TEXT_DIM, COL_PANEL);
     ST7735_DrawHLine(0, SEP_Y, ST7735_WIDTH, COL_SEP);
 
-    /* Spectrum panel: dark frame, black interior, baseline, region labels. */
+    /* Spectrum panel: dark frame, black interior, baseline. */
     draw_panel_frame();
-    ST7735_DrawString(4, 120, "Lows", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(37, 120, "Mids", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString(83, 120, "Highs", COL_TEXT_DIM, COL_BG);
+
+    /* Region label strip, below the panel divider and clear of the panel's
+     * 3 unreachable bottom rows. */
+    ST7735_DrawHLine(PANEL_X, LABEL_SEP_Y, (int16_t)(PANEL_RIGHT - PANEL_X + 1), COL_SEP);
+    ST7735_DrawString5x7(LABEL_LO_X,  LABEL_Y, "LOW", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString5x7(LABEL_MID_X, LABEL_Y, "MID", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString5x7(LABEL_HI_X,  LABEL_Y, "HI",  COL_TEXT_DIM, COL_BG);
 
     /* Reset state */
     for (i = 0; i < NBANDS; i++) {
