@@ -95,9 +95,67 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 #define BLOCK_UNIT     (BLOCK_H + BLOCK_GAP)         /* 7 */
 #define BLOCKS_FULL    (MAX_BAR_H / BLOCK_UNIT)      /* 12 */
 
-/* Boot animation pacing: 46 steps x 38 ms ~= 1.75 s + 150 ms READY. */
-#define BOOT_STEP_DELAY_MS  38
-#define BOOT_HOLD_MS        150
+/* Boot animation pacing.
+ *
+ * HARD BUDGET: Visualizer_Init() runs after MX_USB_DEVICE_Init(), so a slow
+ * boot starves the USB host's enumeration window. There is a reverted commit
+ * in this repo's history ("move Visualizer_Init after USB enumeration to
+ * avoid host timeout"), which is exactly this failure. The previous splash
+ * ran ~1.75 s + 150 ms; keep this one at or under that.
+ *
+ * 27 steps x 45 ms = 1.22 s of animation plus a 420 ms READY hold
+ * ~= 1.64 s total, plus ~40 ms of one-off backdrop painting. Well inside
+ * the old ~1.9 s budget.
+ *
+ * Per-step cost is deliberately O(one grid line), not O(full screen): a
+ * full 128x128 repaint is 32768 bytes ~= 21.8 ms at the 12 MHz SPI1 clock,
+ * which would blow the whole budget in ten frames. */
+#define BOOT_STEP_DELAY_MS    45
+#define BOOT_HOLD_MS          420
+
+/* Scene geometry (retro sun + perspective grid). The grid occupies the
+ * lower third; the sun sits above the horizon, centred, with the title
+ * stack above that. Every element is placed to stay inside
+ * ST7735_USABLE_BOTTOM (125) -- the last 3 rows are never displayed. */
+#define SUN_TOP          40
+#define SUN_R            28     /* diameter; r = SUN_R/2 = 14, so x spans 50..78 */
+#define SUN_SLICE_H      2     /* 1 px cut line every (SUN_SLICE_H+1) rows */
+#define HORIZON_Y        67     /* horizon line; the disc's lower edge   */
+#define SUN_CX           64
+/* Scanlines cover ONLY the sun band. Running them over the title stack
+ * stripes the glyphs and hurts legibility; over the disc they are the
+ * whole point. */
+#define SCANLINE_TOP     SUN_TOP
+#define SCANLINE_BOTTOM  (HORIZON_Y - 2)   /* keep the horizon crisp */
+
+/* Title stack, then the progress bar and status BETWEEN the horizon and
+ * the grid. Nothing overlaps the grid: an earlier layout put the bar and
+ * READY at rows 76..92, which covered 5 of the 10 animated grid rows and
+ * made the scroll look broken. */
+#define TITLE_Y          3      /* "AUDIO" at 2x -> rows 3..10      */
+#define SUBTITLE_Y       21     /* "SYNTHWAVE" 5x7 -> rows 21..27 */
+#define RATE_Y           30     /* rate line 5x7 -> rows 30..36    */
+#define BOOT_BAR_X       22
+#define BOOT_BAR_Y       70
+#define BOOT_BAR_W       84
+#define BOOT_BAR_H       6      /* rows 70..75 */
+#define BOOT_READY_Y     79     /* rows 79..85 */
+
+/* Grid gets the whole bottom band to itself. */
+#define GRID_TOP         88
+#define GRID_BOTTOM      118
+#define GRID_ROWS        8      /* horizontal lines, both endpoints included */
+
+/* Boot status steps. One per animation phase; short enough to clear in
+ * 5x7 and to be re-drawn every step for ~126 bytes. */
+static const char *const boot_status[] = {
+    "CLOCKS", "CLOCKS", "PLL",   "PLL",   "I2S",   "I2S",   "I2S",
+    "DMA",   "DMA",   "USB",   "USB",   "USB FS","RING",  "RING",
+    "I2S",   "I2S",   "I2S",   "TFT",   "TFT",   "MIX",   "MIX",
+    "OUT",   "OUT",   "OUT",   "CHECK", "CHECK", "READY"
+};
+/* Derived from the table, so the two can never drift apart. */
+#define BOOT_STEPS  ((int32_t)(sizeof(boot_status) / sizeof(boot_status[0])))
 
 /* Cyberpunk Neon palette (RGB565, from the design spec 4.2 + RescuePulse). */
 #define COL_BG          0x0000  /* pure black                    */
@@ -113,6 +171,18 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 #define COL_TEXT        0x073E  /* header / title cyan           */
 #define COL_TEXT_DIM    0x7BEF  /* light gray labels             */
 #define COL_OK          0x07E0  /* green "READY"                 */
+
+/* Retro-sun scene palette. The sun is banded like a synthwave sunset:
+ * hot magenta at the top through orange to gold at the horizon. */
+#define COL_SUN_TOP     0xF80F  /* hot magenta band               */
+#define COL_SUN_MID     0xFD20  /* orange band                    */
+#define COL_SUN_LOW     0xFFE0  /* gold band                      */
+#define COL_SUN_GLOW    0x0208  /* faint horizon glow             */
+#define COL_GRID        0x033F  /* azure grid lines (leading)     */
+#define COL_GRID_MID    0x0228  /* mid grid lines                 */
+#define COL_GRID_FAR    0x0208  /* dimmer converging lines       */
+#define COL_SCAN        0x18E3  /* CRT scanline tint (very dark)  */
+#define COL_DIM         0x4208  /* status text while pending      */
 
 /* One rainbow color per bar column, left -> right. Evenly spaced hues
  * converted to RGB565. */
@@ -206,47 +276,230 @@ static void draw_panel_frame(void)
                     (int16_t)(PANEL_BOTTOM - PANEL_TOP - 1), COL_BG);
 }
 
-/* Splash and Boot Loading Animation (RescuePulse-style centered stack). */
-static void show_boot_animation(void)
+/* ============================================================================
+ * BOOT SPLASH — retro sun + perspective grid + CRT scanlines
+ * ============================================================================
+ * Deliberately built from row-level primitives only (FillRect / DrawHLine),
+ * with no framebuffer and no new driver primitives, because SPI1 runs at
+ * 12 MHz: one full 128x128 repaint is 32768 B ~= 21.8 ms. Everything that
+ * stays still is painted once in draw_boot_backdrop(); each animation step
+ * then touches only a single grid row (256 B ~= 0.17 ms) plus a short
+ * 5x7 status string, so the whole splash stays far inside the ~1.7 s budget
+ * that USB enumeration needs.
+ *
+ * A filled disc needs no driver support either: each row's half-width is
+ * sqrt(r*r - dy*dy), so the sun is just a run of FillRect calls.
+ * ==========================================================================*/
+
+/* Band colour for a sun row, by depth from the top of the disc. */
+static uint16_t sun_color_for_row(int16_t y)
 {
-    const int16_t bar_start_x = 18;
-    const int16_t bar_start_y = 80;
-    const int16_t bar_width   = 92;
-    const int16_t bar_height  = 7;
-    int progress;
+    int16_t depth = (int16_t)(y - SUN_TOP);
+
+    if (depth < (SUN_R / 2)) {
+        return COL_SUN_TOP;
+    }
+    if (depth < (SUN_R - 2)) {
+        return COL_SUN_MID;
+    }
+    return COL_SUN_LOW;
+}
+
+/* Repaint every horizontal grid line for the current animation phase.
+ *
+ * The whole grid is repainted each step rather than incrementally erased:
+ * an earlier version advanced one row per step and erased the row behind
+ * it, which ran off the bottom of the band and started deleting the
+ * remaining rows (the grid visibly emptied out halfway through the
+ * splash). Repainting 8 lines is ~2 KB ~= 1.4 ms at 12 MHz, so the
+ * correct version is also the cheap one.
+ *
+ * The motion is a highlight sweeping down the grid: each line is tinted by
+ * how far behind the travelling front it is, which reads as the floor
+ * scrolling toward the viewer.
+ */
+static void draw_boot_grid(int16_t phase)
+{
+    int16_t i;
+    int16_t dx;
+
+    for (i = 0; i < GRID_ROWS; i++) {
+        int16_t y  = (int16_t)(GRID_TOP +
+                               ((i * (GRID_BOTTOM - GRID_TOP)) / (GRID_ROWS - 1)));
+        int16_t d  = (int16_t)((i - phase + (GRID_ROWS * 2)) % GRID_ROWS);
+        uint16_t col = COL_GRID_FAR;
+
+        if (d <= 1) {
+            col = COL_GRID;          /* at the front: brightest */
+        } else if (d <= 3) {
+            col = COL_GRID_MID;
+        }
+
+        /* Leave a small gap at the centre so the converging verticals stay
+         * legible through the horizontals. */
+        for (dx = 0; dx < (SUN_CX - 3); dx++) {
+            ST7735_DrawPixel(dx, y, col);
+            ST7735_DrawPixel((int16_t)(ST7735_WIDTH - 1 - dx), y, col);
+        }
+    }
+}
+
+/* Paint the banded sun disc. SUN_SLICE_H-pixel cut lines are punched back
+ * out in COL_SUN_GAP, which is what makes it read as a synthwave sunset. */
+static void draw_boot_sun(void)
+{
+    int16_t y;
+
+    for (y = SUN_TOP; y < (SUN_TOP + SUN_R); y++) {
+        int32_t dy = (int32_t)(y - (SUN_TOP + (SUN_R / 2)));
+        int32_t r  = (int32_t)(SUN_R / 2);
+        int32_t hw = r - dy;
+        int32_t sq = r * r - dy * dy;
+        int16_t half;
+        int16_t x0;
+        uint16_t col;
+
+        if (sq < 0) {
+            sq = 0;
+        }
+        if (hw < 0) {
+            hw = 0;
+        }
+        if (hw > r) {
+            hw = r;
+        }
+        /* Integer sqrt: hw = floor(sqrt(r^2 - dy^2)). Newton-free, ~6 iters. */
+        {
+            int32_t v = sq;
+            int32_t b = r;
+            int32_t i;
+            for (i = 0; i < 8; i++) {
+                int32_t nb = (b + (v / b)) / 2;
+                if (nb == b) {
+                    break;
+                }
+                b = nb;
+            }
+            half = (int16_t)b;
+        }
+        if (half <= 0) {
+            continue;
+        }
+
+        /* Skip the cut lines entirely rather than drawing then erasing. */
+        if (((y - SUN_TOP) % (SUN_SLICE_H + 1)) >= SUN_SLICE_H) {
+            continue;
+        }
+
+        x0 = (int16_t)(SUN_CX - half);
+        col = sun_color_for_row(y);
+        ST7735_FillRect(x0, y, (int16_t)(half * 2), 1, col);
+    }
+}
+
+/* Horizontally interleaved dark lines over the upper scene, for the CRT
+ * look. Drawn once, not per frame. */
+static void draw_boot_scanlines(void)
+{
+    int16_t y;
+
+    for (y = SCANLINE_TOP; y <= SCANLINE_BOTTOM; y += 2) {
+        /* Only paint where something was actually drawn, otherwise the
+         * scanline would grey out the black sky and flatten the contrast. */
+        ST7735_FillRect(0, y, ST7735_WIDTH, 1, COL_SCAN);
+    }
+}
+
+/* Static half of the scene: sky, sun, horizon, grid, converging lines,
+ * title stack, progress frame and the READY placeholder. */
+static void draw_boot_backdrop(void)
+{
+    int16_t i;
+    int16_t vx;
 
     ST7735_FillScreen(COL_BG);
 
-    /* Centered title stack: 2x main word, 1x subtitle + spec line. */
-    ST7735_DrawStringCentered(24, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
-    ST7735_DrawStringCentered(46, "SYNTHWAVE", COL_UPPER, COL_BG, 1);
-    ST7735_DrawStringCentered(58, UI_RATE_LONG " / I2S", COL_TEXT_DIM, COL_BG, 1);
+    draw_boot_sun();
 
-    /* Dark panel + frame behind the progress bar. */
-    ST7735_FillRect(bar_start_x - 1, bar_start_y - 1, bar_width + 2,
-                    bar_height + 2, COL_PANEL);
-    ST7735_DrawHLine(bar_start_x - 1, bar_start_y - 1, bar_width + 2, COL_BASELINE);
-    ST7735_DrawHLine(bar_start_x - 1, bar_start_y + bar_height, bar_width + 2, COL_BASELINE);
-    ST7735_DrawVLine(bar_start_x - 1, bar_start_y - 1, bar_height + 2, COL_BASELINE);
-    ST7735_DrawVLine(bar_start_x + bar_width, bar_start_y - 1, bar_height + 2, COL_BASELINE);
+    /* Horizon glow + the horizon line itself. */
+    ST7735_FillRect(0, HORIZON_Y - 1, ST7735_WIDTH, 1, COL_SUN_GLOW);
+    ST7735_FillRect(0, HORIZON_Y, ST7735_WIDTH, 1, COL_SUN_LOW);
 
-    /* Slow Neon Color Evolution Fill (~1.75 s -> total boot ~1.9 s). */
-    for (progress = 0; progress <= bar_width - 2; progress += 2) {
-        uint16_t col;
+    /* Converging verticals: they meet at the vanishing point on the
+     * horizon centre, which is what sells the perspective. */
+    for (i = -6; i <= 6; i++) {
+        int16_t x_bottom = (int16_t)(SUN_CX + (i * (ST7735_WIDTH / 12)));
+        int16_t steps = (int16_t)(GRID_BOTTOM - GRID_TOP);
 
-        if (progress < (bar_width / 3)) {
-            col = COL_LOWER;      /* indigo  */
-        } else if (progress < (2 * bar_width / 3)) {
-            col = COL_MID;        /* cyan    */
-        } else {
-            col = COL_UPPER;      /* magenta */
+        if ((steps <= 0) || (x_bottom < 0) || (x_bottom >= ST7735_WIDTH)) {
+            continue;
+        }
+        for (vx = 0; vx <= steps; vx++) {
+            int16_t t = (int16_t)((vx * 100) / steps);
+            int16_t x = (int16_t)(SUN_CX + (((x_bottom - SUN_CX) * t) / 100));
+            ST7735_DrawPixel(x, (int16_t)(GRID_TOP + vx),
+                             (vx < (steps / 3)) ? COL_GRID_FAR : COL_GRID);
+        }
+    }
+
+    /* Paint the grid's leading edge so it is never empty on frame 0. */
+    draw_boot_grid(0);
+
+    draw_boot_scanlines();
+
+    /* Title stack, centred above the sun. */
+    ST7735_DrawStringCentered(TITLE_Y, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
+    ST7735_DrawStringCentered5x7(SUBTITLE_Y, "SYNTHWAVE", COL_UPPER, COL_BG);
+    ST7735_DrawStringCentered5x7(RATE_Y, UI_RATE_LONG " USB DAC", COL_TEXT_DIM, COL_BG);
+
+    /* Progress frame (filled in during the animation). */
+    ST7735_FillRect(BOOT_BAR_X - 1, BOOT_BAR_Y - 1, BOOT_BAR_W + 2,
+                    BOOT_BAR_H + 2, COL_PANEL);
+    ST7735_DrawHLine(BOOT_BAR_X - 1, BOOT_BAR_Y - 1, BOOT_BAR_W + 2, COL_BASELINE);
+    ST7735_DrawHLine(BOOT_BAR_X - 1, BOOT_BAR_Y + BOOT_BAR_H, BOOT_BAR_W + 2, COL_BASELINE);
+    ST7735_DrawVLine(BOOT_BAR_X - 1, BOOT_BAR_Y - 1, BOOT_BAR_H + 2, COL_BASELINE);
+    ST7735_DrawVLine(BOOT_BAR_X + BOOT_BAR_W, BOOT_BAR_Y - 1, BOOT_BAR_H + 2, COL_BASELINE);
+
+    /* READY, shown dimmed until the animation completes. */
+    ST7735_DrawStringCentered5x7(BOOT_READY_Y, "READY", COL_DIM, COL_BG);
+}
+
+/* Boot splash: static backdrop once, then BOOT_STEPS cheap frames. */
+static void show_boot_animation(void)
+{
+    int16_t step;
+
+    draw_boot_backdrop();
+
+    for (step = 0; step < BOOT_STEPS; step++) {
+        int16_t filled;
+
+        /* Advance the grid's travelling highlight (~1.4 ms). */
+        draw_boot_grid((int16_t)(step % GRID_ROWS));
+
+        /* Status line, redrawn in place each step. */
+        ST7735_DrawStringCentered5x7(BOOT_READY_Y, boot_status[step], COL_TEXT_DIM, COL_BG);
+
+        /* Progress fill, 2 px per step, colour-evolving like the old splash. */
+        filled = (int16_t)((step * (BOOT_BAR_W - 2)) / (BOOT_STEPS - 1));
+        {
+            uint16_t col;
+            if (filled < (BOOT_BAR_W / 3)) {
+                col = COL_LOWER;
+            } else if (filled < (2 * BOOT_BAR_W / 3)) {
+                col = COL_MID;
+            } else {
+                col = COL_UPPER;
+            }
+            ST7735_FillRect(BOOT_BAR_X, BOOT_BAR_Y, filled, BOOT_BAR_H, col);
         }
 
-        ST7735_FillRect(bar_start_x + progress, bar_start_y, 2, bar_height, col);
         HAL_Delay(BOOT_STEP_DELAY_MS);
     }
 
-    ST7735_DrawStringCentered(100, "READY", COL_OK, COL_BG, 2);
+    /* Final state: solid bar, green READY. */
+    ST7735_FillRect(BOOT_BAR_X, BOOT_BAR_Y, BOOT_BAR_W, BOOT_BAR_H, COL_OK);
+    ST7735_DrawStringCentered5x7(BOOT_READY_Y, "READY", COL_OK, COL_BG);
     HAL_Delay(BOOT_HOLD_MS);
 }
 

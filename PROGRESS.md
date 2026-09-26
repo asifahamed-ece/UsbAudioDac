@@ -390,3 +390,39 @@ contract violations cheaply, long before the ISA side would.
 - 🔄 In progress
 - ✅ Complete
 - ❌ Blocked
+
+**2026-09-26 — Boot splash: retro sun + perspective grid (`feat/boot-splash-horizon`)**
+
+- Replaced the flat centred-stack splash with a synthwave scene: banded sun disc, horizon,
+  perspective grid with converging verticals, CRT scanlines, a colour-evolving progress bar
+  and a per-step status line (`CLOCKS` → `PLL` → `I2S` → `DMA` → `USB FS` → `RING` → `TFT` →
+  `MIX` → `OUT` → `CHECK` → `READY`).
+- **No framebuffer and no new driver primitives.** SPI1 is 12 MHz, so one full 128x128
+  repaint is 32768 B ≈ 21.8 ms; a framebuffer-based animation would have blown the boot
+  budget in ten frames. The static backdrop is painted once, and each animation step
+  repaints only the grid lines, the bar and a short 5x7 status string (~2.4 ms). A filled
+  disc needs no driver support either — each row's half-width is `sqrt(r²−dy²)`.
+- **Boot time is the binding constraint, not aesthetics.** `Visualizer_Init()` runs after
+  `MX_USB_DEVICE_Init()`, and a reverted commit in this repo's history ("move
+  Visualizer_Init after USB enumeration to avoid host timeout") is exactly that failure.
+  Budget: backdrop 32 ms + 27 steps × (2.4 ms + 45 ms) + 420 ms hold ≈ **1.73 s**, against
+  the previous splash's ~1.9 s.
+- **Two layout bugs found by rendering the scene offline before flashing** (the real font
+  tables and layout constants, drawn to a 128×128 text frame):
+  - The progress bar and READY text were placed at rows 76–92, directly on top of the
+    animated grid rows, hiding 5 of the 10 lines and making the scroll look broken. They now
+    sit between the horizon and the grid (bar rows 70–75, status 79–85), leaving the grid
+    band 88–118 entirely to itself.
+  - Scanlines were going to be drawn over the title stack, which stripes the glyphs. They
+    are now confined to the sun band.
+- **One real animation bug caught the same way:** the first version advanced a single grid
+  row per step and erased the row behind it. Once the row passed the bottom of the band the
+  erase logic started deleting the remaining lines, so the grid visibly emptied out halfway
+  through the splash. Replaced with a phase-driven repaint of all 8 lines, where a highlight
+  sweeps downward. Repainting 8 lines is ~2 KB, so the correct version is also the cheap one.
+- `BOOT_STEPS` is now derived from the `boot_status[]` table with `sizeof`, after a
+  hand-counted literal drifted out of sync with `#define BOOT_STEPS 26` and produced a
+  compiler warning.
+- Verified: 0 build warnings; 5227 + 31 + 760 host checks, 0 failures; text 156328 →
+  157252 B; scene rendered offline at several animation phases with no overlap and all ink
+  above row 125.
