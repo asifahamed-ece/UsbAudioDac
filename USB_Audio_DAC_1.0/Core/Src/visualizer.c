@@ -22,19 +22,8 @@
 #include "visualizer.h"
 #include "st7735.h"
 #include "audio_fft.h"
-#include "usbd_conf.h"
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
-
-/* The rate shown on screen is derived from the ONE constant that defines
- * it, so the display can never disagree with the descriptor again. (It
- * did: the header and splash were hardcoded to "44.1k" after the device
- * moved to 48 kHz.) USBD_AUDIO_FREQ is 48000, so this yields "48". */
-#define STR_HELPER(x) #x
-#define STR(x) STR_HELPER(x)
-#define UI_RATE_NUM   STR(USBD_AUDIO_FREQ / 1000)          /* "48"        */
-#define UI_RATE_SHORT UI_RATE_NUM "k"                      /* "48k"       */
-#define UI_RATE_LONG  UI_RATE_NUM ".0 kHz"                 /* "48.0 kHz"  */
 
 /* Layout (Max bar height is pinned to the FFT's own cap so the
  * differential renderer can never draw outside the panel). */
@@ -59,14 +48,19 @@
  * 128..130 through ST7735_ROWSTART and are NOT visible on the glass, so
  * anything drawn there is silently half-cut. The old labels sat at y=120
  * (rows 120..127) and were clipped by exactly that. The strip is placed
- * so the whole 7-row glyph ends at row 119, leaving 8 rows of margin.
+ * so the whole 8-row glyph ends well clear of them.
  *
  * MAX_BAR_H was reduced 90 -> 84 to make room: 84 is exactly 12 LED
  * blocks of 7 px, which also removes the 6 px "air" row the old 90 px
- * stack left at the top of a full column. */
+ * stack left at the top of a full column.
+ *
+ * Text uses font8x8.h via ST7735_DrawString -- the same table that
+ * already renders correctly on this panel. A separate 5x7 table was tried
+ * here and came out transposed on the glass, so there is exactly one font
+ * in the project now. */
 #define LABEL_SEP_Y    110     /* 1 px divider between panel and labels */
-#define LABEL_Y        113     /* rows 113..119, clear of the clipped 125..127 */
-#define LABEL_MAX_Y    (LABEL_Y + ST7735_GLYPH5X7_H - 1)  /* 119 */
+#define LABEL_Y        112     /* rows 112..119, clear of the clipped 125..127 */
+#define LABEL_MAX_Y    (LABEL_Y + 8 - 1)            /* 119 */
 
 /* Compile-time guard: fail the build rather than ship a clipped label
  * strip. A negative array size is a constraint violation, i.e. an error.
@@ -78,13 +72,13 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
  * produces (2 bass / 6 mid / 4 high at 48 kHz: 47-328, 328-3328,
  * 4406-13172 Hz). Bar i spans x = MARGIN_X + i*(BAR_W+BAR_GAP) and is
  * BAR_W wide, so its centre is 8 + i*10.
- *   bass  bands 0-1  -> centres 8,18   -> group centre 13
- *   mid   bands 2-7  -> centres 28..78 -> group centre 53
- *   high  bands 8-11 -> centres 88..118-> group centre 103
- * A 5x7 glyph advances 6 px, so a string of n chars is n*6-1 wide. */
-#define LABEL_LO_X     4       /* 3 chars = 17 px, centred on 13 */
-#define LABEL_MID_X    44      /* 3 chars = 17 px, centred on 53 */
-#define LABEL_HI_X     97      /* 2 chars = 11 px, centred on 103 */
+ *   bass  bands 0-1  -> centres 8,18    -> group centre 13
+ *   mid   bands 2-7  -> centres 28..78  -> group centre 53
+ *   high  bands 8-11 -> centres 88..118 -> group centre 103
+ * An 8x8 glyph advances 8 px, so 3 characters occupy 24 px. */
+#define LABEL_LO_X     1       /* 3 chars = 24 px, centred on 13 */
+#define LABEL_MID_X    41      /* 3 chars = 24 px, centred on 53 */
+#define LABEL_HI_X     95      /* 2 chars = 16 px, centred on 103 */
 
 /* LED block geometry: 6 px lit block + 1 px black gap = 7 px unit.
  * MAX_BAR_H is 84 = 12 whole blocks, so a full column is exactly 12 blocks
@@ -133,8 +127,7 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
  * READY at rows 76..92, which covered 5 of the 10 animated grid rows and
  * made the scroll look broken. */
 #define TITLE_Y          3      /* "AUDIO" at 2x -> rows 3..10      */
-#define SUBTITLE_Y       21     /* "SYNTHWAVE" 5x7 -> rows 21..27 */
-#define RATE_Y           30     /* rate line 5x7 -> rows 30..36    */
+#define SUBTITLE_Y       21     /* "SYNTHWAVE" 8x8 -> rows 21..28 */
 #define BOOT_BAR_X       22
 #define BOOT_BAR_Y       70
 #define BOOT_BAR_W       84
@@ -147,7 +140,7 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 #define GRID_ROWS        8      /* horizontal lines, both endpoints included */
 
 /* Boot status steps. One per animation phase; short enough to clear in
- * 5x7 and to be re-drawn every step for ~126 bytes. */
+ * 8x8 and cheap enough to redraw every step (~64 B per character). */
 static const char *const boot_status[] = {
     "CLOCKS", "CLOCKS", "PLL",   "PLL",   "I2S",   "I2S",   "I2S",
     "DMA",   "DMA",   "USB",   "USB",   "USB FS","RING",  "RING",
@@ -284,7 +277,7 @@ static void draw_panel_frame(void)
  * 12 MHz: one full 128x128 repaint is 32768 B ~= 21.8 ms. Everything that
  * stays still is painted once in draw_boot_backdrop(); each animation step
  * then touches only a single grid row (256 B ~= 0.17 ms) plus a short
- * 5x7 status string, so the whole splash stays far inside the ~1.7 s budget
+ * status string, so the whole splash stays far inside the ~1.7 s budget
  * that USB enumeration needs.
  *
  * A filled disc needs no driver support either: each row's half-width is
@@ -449,8 +442,8 @@ static void draw_boot_backdrop(void)
 
     /* Title stack, centred above the sun. */
     ST7735_DrawStringCentered(TITLE_Y, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
-    ST7735_DrawStringCentered5x7(SUBTITLE_Y, "SYNTHWAVE", COL_UPPER, COL_BG);
-    ST7735_DrawStringCentered5x7(RATE_Y, UI_RATE_LONG " USB DAC", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawStringCentered(SUBTITLE_Y, "SYNTHWAVE", COL_UPPER, COL_BG, 1);
+    ST7735_DrawStringCentered(SUBTITLE_Y + 10, "USB AUDIO DAC", COL_TEXT_DIM, COL_BG, 1);
 
     /* Progress frame (filled in during the animation). */
     ST7735_FillRect(BOOT_BAR_X - 1, BOOT_BAR_Y - 1, BOOT_BAR_W + 2,
@@ -461,7 +454,7 @@ static void draw_boot_backdrop(void)
     ST7735_DrawVLine(BOOT_BAR_X + BOOT_BAR_W, BOOT_BAR_Y - 1, BOOT_BAR_H + 2, COL_BASELINE);
 
     /* READY, shown dimmed until the animation completes. */
-    ST7735_DrawStringCentered5x7(BOOT_READY_Y, "READY", COL_DIM, COL_BG);
+    ST7735_DrawStringCentered(BOOT_READY_Y, "READY", COL_DIM, COL_BG, 1);
 }
 
 /* Boot splash: static backdrop once, then BOOT_STEPS cheap frames. */
@@ -478,7 +471,7 @@ static void show_boot_animation(void)
         draw_boot_grid((int16_t)(step % GRID_ROWS));
 
         /* Status line, redrawn in place each step. */
-        ST7735_DrawStringCentered5x7(BOOT_READY_Y, boot_status[step], COL_TEXT_DIM, COL_BG);
+        ST7735_DrawStringCentered(BOOT_READY_Y, boot_status[step], COL_TEXT_DIM, COL_BG, 1);
 
         /* Progress fill, 2 px per step, colour-evolving like the old splash. */
         filled = (int16_t)((step * (BOOT_BAR_W - 2)) / (BOOT_STEPS - 1));
@@ -499,7 +492,7 @@ static void show_boot_animation(void)
 
     /* Final state: solid bar, green READY. */
     ST7735_FillRect(BOOT_BAR_X, BOOT_BAR_Y, BOOT_BAR_W, BOOT_BAR_H, COL_OK);
-    ST7735_DrawStringCentered5x7(BOOT_READY_Y, "READY", COL_OK, COL_BG);
+    ST7735_DrawStringCentered(BOOT_READY_Y, "READY", COL_OK, COL_BG, 1);
     HAL_Delay(BOOT_HOLD_MS);
 }
 
@@ -515,13 +508,13 @@ void Visualizer_Init(void)
     /* Clear and prepare main interface */
     ST7735_FillScreen(COL_BG);
 
-    /* RescuePulse-style header band with centered device title. */
+    /* RescuePulse-style header band, with the device name centred in it.
+     * The name is the one piece of identity worth the header. The sample
+     * rate used to sit here too, but it read as noise and had already
+     * gone stale once. Colour is COL_UPPER, the same electric magenta the
+     * boot splash uses for SYNTHWAVE, so the two screens match. */
     ST7735_FillRect(0, 0, ST7735_WIDTH, HEADER_H, COL_PANEL);
-    ST7735_DrawString(4, 4, "USB AUDIO", COL_TEXT, COL_PANEL);
-    /* Right-aligned with a 4 px margin, mirroring "USB AUDIO"'s left margin
-     * (a fixed x=84 left a lopsided gap once the label shrank to 3 chars). */
-    ST7735_DrawString((int16_t)(ST7735_WIDTH - 4 - (int16_t)(sizeof(UI_RATE_SHORT) - 1) * 8),
-                      4, UI_RATE_SHORT, COL_TEXT_DIM, COL_PANEL);
+    ST7735_DrawStringCentered(4, "SYNTHWAVE", COL_UPPER, COL_PANEL, 1);
     ST7735_DrawHLine(0, SEP_Y, ST7735_WIDTH, COL_SEP);
 
     /* Spectrum panel: dark frame, black interior, baseline. */
@@ -530,9 +523,9 @@ void Visualizer_Init(void)
     /* Region label strip, below the panel divider and clear of the panel's
      * 3 unreachable bottom rows. */
     ST7735_DrawHLine(PANEL_X, LABEL_SEP_Y, (int16_t)(PANEL_RIGHT - PANEL_X + 1), COL_SEP);
-    ST7735_DrawString5x7(LABEL_LO_X,  LABEL_Y, "LOW", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString5x7(LABEL_MID_X, LABEL_Y, "MID", COL_TEXT_DIM, COL_BG);
-    ST7735_DrawString5x7(LABEL_HI_X,  LABEL_Y, "HI",  COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(LABEL_LO_X,  LABEL_Y, "LOW", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(LABEL_MID_X, LABEL_Y, "MID", COL_TEXT_DIM, COL_BG);
+    ST7735_DrawString(LABEL_HI_X,  LABEL_Y, "HI",  COL_TEXT_DIM, COL_BG);
 
     /* Reset state */
     for (i = 0; i < NBANDS; i++) {
