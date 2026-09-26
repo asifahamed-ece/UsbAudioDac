@@ -108,33 +108,45 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 #define BOOT_STEP_DELAY_MS      55
 #define BOOT_HOLD_MS            500
 
-/* Scene geometry (retro sun + perspective grid). The grid occupies the
- * lower third; the sun sits above the horizon, centred, with the title
- * stack above that. Every element is placed to stay inside
- * ST7735_USABLE_BOTTOM (125) -- the last 3 rows are never displayed. */
-#define SUN_TOP          42
-#define SUN_R            24     /* diameter; r = SUN_R/2 = 12, so x spans 52..76 */
-#define SUN_SLICE_H      3     /* 3 lit rows then a 2 px cut line        */
-#define HORIZON_Y        67     /* horizon line, just under the disc       */
+/* Scene geometry — one continuous synthwave shot: title stack and a setting
+ * sun in the sky, a bright horizon, a grid floor running unbroken from that
+ * horizon down, and the loading controls anchored at the very bottom.
+ *
+ * Every element is placed to stay inside ST7735_USABLE_BOTTOM (125); the last
+ * 3 rows are never displayed (see ST7735_HIDDEN_BOTTOM_ROWS).
+ *
+ * Sky ....... rows 3..37   title stack
+ * Sun ....... rows 41..68  28 px disc, centre row 55
+ * Horizon ... row 58       cuts the disc: 11 of its 28 rows sit below
+ * Ground .... rows 59..98  black cover hides the submerged disc, then the
+ *                           grid floor; the rays converge at (64, 58)
+ * Controls .. rows 100..117
+ *
+ * The disc's widest point is row 55, three rows ABOVE the horizon, so the sun
+ * reads as *setting* rather than sinking. */
+#define SUN_TOP          41
+#define SUN_R            28     /* diameter; r = 14, so x spans 50..78   */
 #define SUN_CX           64
-
-/* Title stack, then the progress bar and status BETWEEN the horizon and
- * the grid. Nothing overlaps the grid: an earlier layout put the bar and
- * READY at rows 76..92, which covered 5 of the 10 animated grid rows and
- * made the scroll look broken. */
-#define TITLE_Y          3      /* "AUDIO" at 2x -> rows 3..10      */
-#define SUBTITLE_Y       21     /* "SYNTHWAVE" 8x8 -> rows 21..28 */
+#define SUN_BAND_H       2      /* lit rows per band                    */
+#define SUN_BAND_GAP     2      /* dark rows between bands              */
+#define HORIZON_Y        58     /* bright line; also the vanishing point */
+#define GROUND_TOP       59     /* black fill hides the submerged disc  */
+#define TITLE_Y          3      /* "AUDIO" at 2x -> rows 3..18          */
+#define SUBTITLE_Y       21     /* "SYNTHWAVE" 8x8 -> rows 21..28       */
+#define RATE_Y           30     /* "USB AUDIO DAC" -> rows 30..37       */
+#define GRID_TOP         71
+#define GRID_BOTTOM      98
+#define GRID_ROWS        6      /* horizontal lines, both endpoints incl. */
+#define GRID_RAYS        4      /* +/- this many rays either side of centre */
 #define BOOT_BAR_X       22
-#define BOOT_BAR_Y       70
+#define BOOT_BAR_Y       101    /* rows 101..106, frame 100..107 */
 #define BOOT_BAR_W       84
-#define BOOT_BAR_H       6      /* rows 70..75 */
-#define BOOT_READY_Y     79     /* rows 79..85 */
+#define BOOT_BAR_H       6
+#define BOOT_READY_Y     110    /* rows 110..117 */
 
-/* Grid gets the whole bottom band to itself. */
-#define GRID_TOP         88
-#define GRID_BOTTOM      118
-#define GRID_ROWS        6      /* horizontal lines, both endpoints included */
-#define GRID_RAYS        4      /* +/- this many rays either side of centre     */
+/* Compile-time guard: the status line must clear the 3 unreachable bottom
+ * rows. A negative array size is a constraint violation, i.e. an error. */
+typedef char boot_status_must_fit[(BOOT_READY_Y + 7 < ST7735_USABLE_BOTTOM) ? 1 : -1];
 
 /* Boot phases. These are the words the splash actually shows, in order.
  *
@@ -171,7 +183,6 @@ static const char *const boot_status[] = {
 #define COL_SUN_TOP     0xF80F  /* hot magenta band               */
 #define COL_SUN_MID     0xFD20  /* orange band                    */
 #define COL_SUN_LOW     0xFFE0  /* gold band                      */
-#define COL_SUN_GLOW    0x0208  /* faint horizon glow             */
 #define COL_GRID        0x033F  /* azure grid lines (leading)     */
 #define COL_GRID_MID    0x0228  /* mid grid lines                 */
 #define COL_GRID_FAR    0x0208  /* dimmer converging lines       */
@@ -284,18 +295,29 @@ static void draw_panel_frame(void)
  * sqrt(r*r - dy*dy), so the sun is just a run of FillRect calls.
  * ==========================================================================*/
 
-/* Band colour for a sun row, by depth from the top of the disc. */
+/* Band colour for a sun row, ramped across the VISIBLE part of the disc.
+ *
+ * The ramp is keyed to HORIZON_Y, not to the disc's full height. With the
+ * sun setting, 11 of its 28 rows sit below the horizon and are painted over
+ * by the ground cover -- so a ramp measured over the whole disc put the warm
+ * gold band at depths 26..27, i.e. entirely underwater, and the sun came out
+ * with only two colours. Splitting the visible height into thirds puts the
+ * gold right at the horizon, which is where a sunset is brightest. */
 static uint16_t sun_color_for_row(int16_t y)
 {
     int16_t depth = (int16_t)(y - SUN_TOP);
+    int16_t vis   = (int16_t)(HORIZON_Y - SUN_TOP);   /* rows above the horizon */
 
-    if (depth < (SUN_R / 2)) {
+    if ((vis <= 0) || (depth < 0)) {
         return COL_SUN_TOP;
     }
-    if (depth < (SUN_R - 2)) {
-        return COL_SUN_MID;
+    if ((depth * 3) < vis) {
+        return COL_SUN_TOP;        /* top third:    hot magenta */
     }
-    return COL_SUN_LOW;
+    if ((depth * 3) < (vis * 2)) {
+        return COL_SUN_MID;        /* middle third: orange     */
+    }
+    return COL_SUN_LOW;            /* bottom third: gold       */
 }
 
 /* Repaint every horizontal grid line for the current animation phase.
@@ -376,8 +398,9 @@ static void draw_boot_sun(void)
             continue;
         }
 
-        /* Skip the cut lines entirely rather than drawing then erasing. */
-        if (((y - SUN_TOP) % (SUN_SLICE_H + 1)) >= SUN_SLICE_H) {
+        /* Skip the dark gaps between bands entirely rather than drawing
+         * then erasing. SUN_BAND_H lit rows, SUN_BAND_GAP dark. */
+        if (((y - SUN_TOP) % (SUN_BAND_H + SUN_BAND_GAP)) >= SUN_BAND_H) {
             continue;
         }
 
@@ -415,30 +438,43 @@ static void draw_boot_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
     }
 }
 
-/* Static half of the scene: sky, sun, horizon, grid, converging lines,
- * title stack, progress frame and the READY placeholder. */
+/* Static half of the scene: sky, setting sun, horizon, ground cover, grid,
+ * converging rays, title stack, progress frame and the READY placeholder.
+ *
+ * Draw order matters. The disc is drawn whole, then the ground is painted
+ * black OVER its lower part, and only then is the horizon line drawn -- so
+ * the disc appears to be sinking behind the horizon instead of floating
+ * above it. Drawing the horizon first would let the submerged part show. */
 static void draw_boot_backdrop(void)
 {
     int16_t i;
 
     ST7735_FillScreen(COL_BG);
 
+    /* The whole disc first, including the part that will be submerged. */
     draw_boot_sun();
 
-    /* Horizon glow + the horizon line itself. */
-    ST7735_FillRect(0, HORIZON_Y - 1, ST7735_WIDTH, 1, COL_SUN_GLOW);
+    /* Ground cover: black from just under the horizon down to the top of the
+     * grid. This hides the submerged part of the disc and gives the rays a
+     * black ground to run over. 128 x 12 px = 3072 B ~= 2.0 ms at 12 MHz. */
+    ST7735_FillRect(0, GROUND_TOP, ST7735_WIDTH,
+                    (int16_t)(GRID_TOP - GROUND_TOP), COL_BG);
+
+    /* The horizon line, after the cover so it stays in front. No glow row
+     * above it: at HORIZON_Y-1 that would stripe the disc's lower bands, the
+     * same mistake the screen-wide scanlines were. */
     ST7735_FillRect(0, HORIZON_Y, ST7735_WIDTH, 1, COL_SUN_LOW);
 
-    /* Converging verticals: they meet at the vanishing point on the
-     * horizon centre, which is what sells the perspective. */
+    /* Converging rays, all meeting at the vanishing point on the horizon
+     * centre. That convergence is what sells the perspective. */
     for (i = -GRID_RAYS; i <= GRID_RAYS; i++) {
         int16_t x_bottom = (int16_t)(SUN_CX + (i * (ST7735_WIDTH / 12)));
 
         if ((x_bottom < 0) || (x_bottom >= ST7735_WIDTH)) {
             continue;
         }
-        draw_boot_line(SUN_CX, GRID_TOP, x_bottom, GRID_BOTTOM, COL_GRID);
-        draw_boot_line(SUN_CX, GRID_TOP, x_bottom, GRID_TOP + 6, COL_GRID_FAR);
+        draw_boot_line(SUN_CX, HORIZON_Y, x_bottom, GRID_BOTTOM, COL_GRID);
+        draw_boot_line(SUN_CX, HORIZON_Y, x_bottom, HORIZON_Y + 7, COL_GRID_FAR);
     }
 
     /* Paint the grid's leading edge so it is never empty on frame 0. */
@@ -447,7 +483,7 @@ static void draw_boot_backdrop(void)
     /* Title stack, centred above the sun. */
     ST7735_DrawStringCentered(TITLE_Y, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
     ST7735_DrawStringCentered(SUBTITLE_Y, "SYNTHWAVE", COL_UPPER, COL_BG, 1);
-    ST7735_DrawStringCentered(SUBTITLE_Y + 10, "USB AUDIO DAC", COL_TEXT_DIM, COL_BG, 1);
+    ST7735_DrawStringCentered(RATE_Y, "USB AUDIO DAC", COL_TEXT_DIM, COL_BG, 1);
 
     /* Progress frame (filled in during the animation). */
     ST7735_FillRect(BOOT_BAR_X - 1, BOOT_BAR_Y - 1, BOOT_BAR_W + 2,
