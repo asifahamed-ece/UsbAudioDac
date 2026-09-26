@@ -37,7 +37,8 @@ Single source of truth for every MCU↔peripheral connection. Sections **A/B are
 | GND | ground | → | GND | **must share MCU ground** |
 | 5V | power | → | VIN | 2.5–5.5 V; 5 V = full power |
 
-> I2S format: Philips standard, 16-bit data / 32-bit frame, 44.117 kHz, **no MCLK used** (this amp needs no MCLK — leave any MCLK output disconnected). Verified playing.
+> I2S format: Philips standard, 16-bit data / 32-bit frame, **48 000 Hz exact**, **no MCLK used** (this amp needs no MCLK — leave any MCLK output disconnected). Verified playing.
+> *(An earlier build ran this at 44 117 Hz; that was discarded because 44.1 kHz is unreachable exactly from the 25 MHz HSE — see README → Clock Configuration for the +400 ppm analysis and the 192 MHz PLLI2S that replaced it.)*
 
 ### MAX98357A module pinout & configuration reference
 
@@ -56,11 +57,22 @@ Single source of truth for every MCU↔peripheral connection. Sections **A/B are
 
 | GAIN connection | Gain | Use case |
 |-----------------|------|----------|
-| GAIN → GND | **12 dB** | Good "loud + headroom" baseline |
-| GAIN → nothing (float) | **9 dB (factory default)** | Cleanest / least hiss — keep this |
+| GAIN → GND | **12 dB** | Good "loud + headroom" baseline. **This is what this build uses — see note below.** |
+| GAIN → nothing (float) | **9 dB (factory default)** | Datasheet default. Was the original advice here; **discarded — see note below.** |
 | GAIN → GND via 100 kΩ | 15 dB | Maximum |
 | GAIN → VIN | 6 dB | Quiet source, low-noise |
 | GAIN → VIN via 100 kΩ | 3 dB | Minimum |
+
+> **MEASURED ON THIS BOARD — GAIN must be tied, not left floating.**
+> The advice used to be "leave GAIN floating for the cleanest 9 dB". In practice
+> a floating GAIN produced audible low-level distortion (a ~200/300 Hz buzzy
+> character under sustained tone) that no amount of firmware chasing could
+> remove. A generated-tone isolation test in `audio_i2s.c` (`dbg_bypass_usb`)
+> proved the I2S → DMA → amp path was clean, which pointed at the amp; tying
+> **GAIN to GND** removed the artifact completely. The datasheet's
+> "float = 9 dB default" is a spec, not a measurement — on this module the
+> floating pin is evidently picking up noise. If you hear that buzzy
+> character, check GAIN before looking at the firmware.
 
 #### SD (SD_MODE) pin → shutdown & channel (datasheet Table 5, trip points B0/B1/B2)
 
@@ -74,11 +86,11 @@ Single source of truth for every MCU↔peripheral connection. Sections **A/B are
 
 #### Practical wiring for this project
 
-- **Left SD exactly as the board shipped** — it already plays. Do nothing on GAIN/SD unless you need to change something.
+- **Tie GAIN to GND** (12 dB) — see the measured note in the GAIN table above. Leaving it floating is what caused the residual distortion. Leave **SD** exactly as the board shipped; it already plays.
 - Optional hardware **mute / power-save (Phase 4+):** drive SD from an MCU GPIO (push-pull, 3.3 V logic, no resistor needed):
   `GPIO high → left-channel play`, `GPIO low → shutdown`. 3.3 V is safely above the 1.4 V B2 trip point, 0 V below the 0.16 V B0 point. Pick a spare pin (e.g. PB9). Don't tie SD to a clock pin — it is *not* an I2S clock.
 - **Channel select doesn't affect audio here** — the firmware sends identical L/R samples per frame, so left / right / mono all sound identical. Left is the convention to use.
-- Gain vs. volume: I2S full-scale is fixed, so gain just sets how loud that is; keep 9 dB (default) and let the Phase 4 **software volume** scale the samples.
+- Gain vs. volume: I2S full-scale is fixed, so gain just sets how loud that is. GAIN is hardware (12 dB); let the Phase 4 **software volume** scale the samples.
 - Verify what *your* module strapped: with the board powered off, measure GAIN/SD continuity to VIN/GND (R×1k) — or just leave it, since it works.
 
 ## B) USB — OTG FS ✅ WIRED & WORKING

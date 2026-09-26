@@ -96,7 +96,16 @@ void HAL_I2S_MspInit(I2S_HandleTypeDef* hi2s)
   /** Initializes the peripherals clock
   */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_I2S;
-    PeriphClkInitStruct.PLLI2S.PLLI2SN = 192;
+    /* 48 kHz exact-rate I2S clock.
+     * PLLI2S: 25 MHz HSE / M=25 = 1 MHz VCO in, x N=384 = 384 MHz VCO out, / R=2 = 192 MHz I2SCLK.
+     *   VCO out 384 MHz  (datasheet Table 42 fVCO_OUT: 100..432 MHz)      OK
+     *   I2SCLK   192 MHz (datasheet Table 42 fPLLI2S_OUT: max 216 MHz)     OK
+     *   VCO in     1 MHz (datasheet Table 42 fPLLI2S_IN: 0.95..2.10 MHz)  OK
+     * HAL_I2S_Init then picks I2SDIV=62, ODD=1 => Fs = 192e6/(32*125) = 48000.000000 Hz exactly,
+     * so the I2S consumes precisely what the USB host delivers: zero drift, no feedback endpoint
+     * needed. 44 100 Hz is NOT reachable from a 25 MHz HSE through PLLI2S at any M/N/R.
+     * Was N=192/R=2 => 96 MHz => I2SDIV=34/ODD=0 => 44117.647 Hz (+400 ppm vs 44100). */
+    PeriphClkInitStruct.PLLI2S.PLLI2SN = 384;
     PeriphClkInitStruct.PLLI2S.PLLI2SM = 25;
     PeriphClkInitStruct.PLLI2S.PLLI2SR = 2;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)

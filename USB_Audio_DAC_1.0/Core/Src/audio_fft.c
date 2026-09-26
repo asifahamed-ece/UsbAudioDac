@@ -1,7 +1,7 @@
 /* Core/Src/audio_fft.c
  *
  * 1024-point real FFT → 12 perceptual band heights for the TFT
- * visualizer (2 bass / 6 mid / 4 high, ~43 Hz → ~12 kHz, log-spaced).
+ * visualizer (2 bass / 6 mid / 4 high, ~47 Hz → ~13 kHz, log-spaced).
  *
  * CONCURRENCY (I2S DMA ISR vs main loop)
  * ---------------------------------------
@@ -29,7 +29,8 @@
  * -------
  *   Absolute-dBFS band mapping (see AUDIO_FFT_FULL_SCALE below). A
  *   linear dB window of AUDIO_FFT_DB_RANGE maps [−RANGE, 0] dB →
- *   [0, 90]. The 4 high bands (>= ~4 kHz) get a +6 dB presence lift
+ *   [0, AUDIO_FFT_MAX_HEIGHT] (84). The 4 high bands (>= ~4.4 kHz) get a
+ *   +6 dB presence lift
  *   (band_presence[]) so music's naturally quieter highs animate —
  *   the display is hearing-focused, not a flat analyzer.
  */
@@ -70,12 +71,17 @@ static volatile uint8_t write_idx;
 static volatile uint8_t frame_ready;
 static uint16_t fill_count;   /* ISR-owned only */
 
-/* Perceptual band edges (~43 Hz → 12 kHz) as bin indices at
- * Fs = 44100 Hz, N = 1024 (df ≈ 43.07 Hz), log-ish spaced and weighted
- * toward human hearing: 2 bass (43–301 Hz, a 60 Hz floor is resolvable),
- * 6 mids (301 Hz–4 kHz, most musical energy), 4 highs (4–12 kHz; the old
- * dead 17 kHz top band is gone). Band 0 starts at bin 1 (skips DC);
- * band 4 covers bins 22–32 ≈ 947–1378 Hz (a 1 kHz tone lands here). */
+/* Perceptual band edges (~47 Hz → 13 kHz) as bin indices at
+ * Fs = 48000 Hz, N = 1024 (df = 46.875 Hz), log-ish spaced and weighted
+ * toward human hearing: 2 bass, 6 mids, 4 highs. Band 0 starts at bin 1
+ * (skips DC); band 4 covers bins 22-32 ~ 1031-1500 Hz, so a 1 kHz tone
+ * still lands in band 4.
+ *
+ * NOTE: band_start[] holds BIN INDICES, so the audio-rate change
+ * (44.1 -> 48 kHz) moved every band centre up by 8.8 %
+ * (df 43.07 -> 46.875 Hz) while this table stayed the same. Acceptable
+ * for a "hearing-focused" display; rescaling it to restore the old Hz
+ * labels is a separate, non-urgent change. */
 static const uint16_t band_start[AUDIO_FFT_BANDS + 1U] = {
     1U, 4U, 7U, 14U, 22U, 33U, 49U, 71U, 94U, 131U, 181U, 241U, 281U
 };

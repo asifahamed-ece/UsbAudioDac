@@ -49,19 +49,25 @@ int16_t audio_i2s_buffer[AUDIO_I2S_BUFFER_SIZE] = {0};
  * bypasses the USB bridge completely.
  *   - generated tone is clean      => the USB/ring data path is the culprit
  *   - generated tone still 200/300Hz-buzzy => amp/power/speaker is the culprit
- * Set dbg_bypass_usb = 0 (SWD/GDB) to restore normal USB playback with no
- * reflash.  Default is 1 so the isolation test runs right after flashing.
- * DELETE this block after the test.
+ * Set dbg_bypass_usb = 1 (SWD/GDB) to run the isolation test with no
+ * reflash; it ships as 0 so normal USB playback works right after
+ * flashing. NOTE: this diagnostic has already served its purpose -- the
+ * residual distortion it was built to chase turned out to be hardware
+ * (MAX98357A GAIN pin left floating), not firmware. The block is dead
+ * weight kept only until the SPI/underrun work settles; delete it then.
  * ==========================================================================*/
 volatile uint8_t dbg_bypass_usb = 0U;
 #define GEN_FREQ_HZ    1000.0f
-#define GEN_SR         44100.0f
+/* Must match the real I2S2 rate (see PLLI2S setup in stm32f4xx_hal_msp.c),
+ * otherwise the generated tone's pitch is wrong and the isolation test
+ * misleads. 48000 Hz exactly. */
+#define GEN_SR         48000.0f
 #define GEN_AMP        9000
 static uint32_t gen_phase = 0U;
 
 /* Scratch for pulling mono samples from the ring before duplicating
- * them into L+R. 220 int16 = 220 mono samples = 5 ms of audio at
- * 44.1 kHz = exactly one half of the I2S buffer's worth.
+ * them into L+R. 220 int16 = 220 mono samples = 4.6 ms of audio at
+ * 48 kHz = exactly one half of the I2S buffer's worth.
  *
  * Why a scratch instead of writing directly into the I2S buffer:
  * RingBuffer_Read writes samples contiguously (mono), but the I2S
@@ -94,16 +100,20 @@ static void audioi2s_fill_generated(uint16_t mono_count, uint16_t stereo_dst)
 #define I2S_HALF_BYTES       (I2S_HALF_MONO_COUNT * 2 * sizeof(int16_t))  /* 880 */
 
 /* ============================================================================
- * STEP DIAG NSTRUMENTATION (temporary, non-behavioral) — confirm the ~100 Hz
+ * STEP DIAG INSTRUMENTATION (temporary, non-behavioral) — confirm the ~100 Hz
  * artifact source in the consumer path. Read via SWD/GDB while a 1 kHz tone
  * chatters:
- *   - dbg_partial_count rising at ~200/s (5 ms halves) => consumer starvation
+ *   - dbg_partial_count rising at ~218/s (4.6 ms halves) => consumer starvation
  *     (short fills); dbg_partial_short is total missing mono samples.
  *   - dbg_late_gap / dbg_max_gap_ms >0 => a refill callback came late (>6 ms),
  *     so the DMA replayed a partially-refilled half (latency/jitter).
  *   - If BOTH stay ~0 the artifact is not starvation or cadence -> look at
  *     wrap/alignment next.  events/sec = count / (seconds of playback).
- * Remove after the root cause is fixed.
+ * STATUS: the root cause WAS this path's sample rate -- the device ran
+ * 44117.647 Hz while the host sent 48000 Hz, so the ring slowly drained
+ * and the deficit showed up as periodic thuds. Fixed by making the I2S
+ * rate exactly 48000 Hz. The counters are retained only as a regression
+ * tripwire; delete this block once the SPI/underrun work settles.
  * ==========================================================================*/
 volatile uint32_t dbg_refill_calls;    /* total HalfA+HalfB refills performed  */
 volatile uint32_t dbg_partial_count;   /* refills that got < 220 mono samples  */
@@ -119,7 +129,7 @@ static inline void dbg_track_refill(uint16_t n)
 
     dbg_refill_calls++;
 
-    /* Detect a late/missed callback: two refills are normally ~5 ms apart.
+    /* Detect a late/missed callback: two refills are normally ~4.6 ms apart.
      * A gap > 6 ms means the DMA likely replayed past a half that was not
      * (or not yet) refilled. */
     if (dbg_refill_calls > 1U)

@@ -106,12 +106,14 @@ extern "C" {
 
 
 #define AUDIO_OUT_PACKET                              (uint16_t)(((USBD_AUDIO_FREQ * 2U) / 1000U))
-/* Largest single OUT packet this mono 44.1 kHz stream receives: nominal
- * 88 bytes, but the "long frame" every 10 ms carries 90 bytes (45 samples,
- * 9x44 + 1x45 per 441 samples).  wMaxPacketSize / EP / PrepareReceive must
- * handle 90 so the long frame is not clipped (was silently dropping 1
- * sample every 10 ms -> a 100 Hz glitch on a steady tone). */
-#define AUDIO_OUT_PACKET_MAX                          90U
+/* Largest single OUT packet this mono stream receives.
+ * At 48 kHz with bInterval=1 (USB FS = 1000 frames/s) every frame carries
+ * exactly 48000/1000 = 48 samples = 96 bytes, so this is exact, NOT a
+ * "long frame" headroom value like the old 44.1 kHz case needed
+ * (88 nominal + 90 on the 1-in-10 long frame, which used to silently drop
+ * 1 sample every 10 ms -> a 100 Hz glitch on a steady tone).
+ * Keep AUDIO_OUT_PACKET_MAX >= AUDIO_OUT_PACKET. */
+#define AUDIO_OUT_PACKET_MAX                          96U
 #define AUDIO_DEFAULT_VOLUME                          70U
 
 /* Number of sub-packets in the audio transfer buffer. You can modify this value but always make sure
@@ -157,12 +159,26 @@ typedef struct
 {
   uint32_t alt_setting;
   /* buffer[] is the USB isochronous OUT circular buffer (logical size
-   * AUDIO_TOTAL_BUF_SIZE = 7040 bytes).  The extra AUDIO_OUT_PACKET_MAX
-   * bytes after the logical end are a spill pad: the HAL copies each
-   * received packet linearly to &buffer[wr_ptr] before DataOut sees the
-   * rollback, so a 90-byte long frame armed at wr_ptr=6951..7039 would
-   * write past the array and clobber the struct fields below.  The pad
-   * absorbs the overshoot (worst copy end = 7039+90 = 7129 <= 7130).
+   * AUDIO_TOTAL_BUF_SIZE = 96 * 80 = 7680 bytes).  The extra
+   * AUDIO_OUT_PACKET_MAX bytes after the logical end are a spill pad: the
+   * HAL copies each received packet linearly to &buffer[wr_ptr] before
+   * DataOut sees the rollback, so a copy that starts past the logical end
+   * would run off the array and clobber the struct fields below.
+   *
+   * The pad is still mandatory, but NOT for the reason originally written
+   * here. That text described the 44.1 kHz "long frame": 88 nominal bytes
+   * with 90 every 10th frame, which left wr_ptr off a 90-byte grid and
+   * overshot the end. At 48 kHz every frame is exactly 96 bytes and
+   * 7680 % 96 == 0, so wr_ptr stays 96-aligned and a FULL packet can no
+   * longer overshoot.
+   *
+   * What still overshoots is the off-grid case: a short or zero-length
+   * packet (a poll that carries fewer fresh bytes than a full frame) can
+   * leave wr_ptr anywhere, e.g. 7679. Worst-case copy end is then
+   * 7679 + 96 = 7775 <= 7776, exactly the declared array size. Without
+   * the pad that write lands on wr_ptr/rd_ptr/control -- which is what
+   * caused the original screeching and hard faults.
+   *
    * All circular logic still wraps at AUDIO_TOTAL_BUF_SIZE; the pad
    * bytes are never consumed by Sync or Refill.
    * The static malloc pool is sizeof-derived, so it grows automatically. */

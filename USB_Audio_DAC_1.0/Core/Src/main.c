@@ -53,7 +53,8 @@ DMA_HandleTypeDef hdma_spi2_tx;
  * refill from the USB ring buffer. */
 
 /* Independent watchdog (~1 s window, refreshed every main-loop pass).
- * Declared static; instance is the shared IWDG peripheral. */
+ * File-scope (not static) so the CubeMX-generated handle stays visible to
+ * the IWDG HAL; instance is the shared IWDG peripheral. */
 IWDG_HandleTypeDef hiwdg;
 /* USER CODE END PV */
 
@@ -127,8 +128,8 @@ int main(void)
    * USB ring buffer.) */
 
   /* TFT visualizer: ST7735 SPI bring-up + splash. Must run BEFORE
-   * the IWDG starts — the splash uses HAL_Delay ~1 s, which would
-   * trip a ~1 s watchdog mid-animation and reset the MCU. */
+   * the IWDG starts — the splash blocks in HAL_Delay for ~3.5 s,
+   * which would trip a ~1 s watchdog mid-animation and reset the MCU. */
   Visualizer_Init();
 
   /* Start the independent watchdog: LSI (~32 kHz) / 64 = 500 Hz,
@@ -234,7 +235,7 @@ static void MX_I2S2_Init(void)
   hi2s2.Init.Standard = I2S_STANDARD_PHILIPS;
   hi2s2.Init.DataFormat = I2S_DATAFORMAT_16B;
   hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_DISABLE;
-  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_44K;
+  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_48K;
   hi2s2.Init.CPOL = I2S_CPOL_LOW;
   hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
   hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
