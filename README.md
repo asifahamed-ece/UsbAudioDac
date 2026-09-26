@@ -208,13 +208,9 @@ UsbAudioDac/
 | 3 | USB Audio Class 1.0 device — PC plays music to speaker | ✅ Complete |
 | 3.5 | Reliability: stack bump, host unit tests, IWDG watchdog | ✅ Complete |
 | 4 | Rotary encoder volume (software gain) + mute | ⏳ Planned |
-| 5 | ST7735S TFT visualizer (12-band FFT + boot splash) | ✅ Complete — on `feat/boot-splash-horizon` |
+| 5 | ST7735S TFT visualizer (12-band FFT + boot splash) | ✅ Complete |
 | 6 | FreeRTOS integration (4 tasks: Audio, Display, Encoder, Debug) | ⏳ Planned |
 | 7 | Polish, enclosure, final documentation | ⏳ Planned |
-
-> Phase 5 is built, flashed and verified on the glass, but lives on
-> `feat/boot-splash-horizon` and has **not** been merged to `main` yet. `main`
-> still contains a deleted 5x7 font — don't flash a build made from `main`.
 
 ### Key Debugging Stories
 

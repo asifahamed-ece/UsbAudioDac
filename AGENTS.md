@@ -6,9 +6,11 @@ Embedded firmware for STM32F411CEU6 Black Pill USB Audio Class 1.0 device. Audio
 
 **Status:** Phases 0–3 and 3.5 complete (toolchain, clocks, I2S+DMA, USB audio, reliability/tests/watchdog), plus the Phase 5 TFT visualizer (ST7735S + 12-band FFT + boot splash) which is built, flashed and verified on the glass. Still to do: Phase 4 (encoder volume), Phase 6 (FreeRTOS), Phase 7 (polish).
 
-> **Branch warning:** display work lives on `feat/boot-splash-horizon`. `main` still
-> contains the deleted 5x7 font (`Core/Inc/font5x7.h`, `tests/test_font5x7.c`) and
-> 5x7 references in `visualizer.c`. **Do not flash a build made from `main`.**
+> **Branches:** everything ships from `main`. The display work (Phase 5) was
+> developed on `feat/boot-splash-horizon` and merged in PR #4; that branch is
+> retained but is not needed to build. The 5x7 font that used to sit on `main`
+> (`Core/Inc/font5x7.h`, `tests/test_font5x7.c`) is gone — there is exactly one
+> font, `Core/Src/font8x8.h`.
 
 ## Build, Test & Flash
 
