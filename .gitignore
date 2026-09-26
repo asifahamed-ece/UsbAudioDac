@@ -22,3 +22,17 @@ USB_Audio_DAC_1.0/tests/test_ring_buffer
 USB_Audio_DAC_1.0/tests/test_audio_fft
 USB_Audio_DAC_1.0/tests/test_font_render
 docs/
+
+# merge / editor leftovers
+*.orig
+*.rej
+*.bak
+*~
+compile_commands.json
+
+# test recordings and scratch media (captured while debugging audio artifacts)
+*.mp3
+*.wav
+*.m4a
+*.aac
+Thumbs.db

@@ -283,6 +283,10 @@ This repo keeps four documents, each with one job:
 | **[DEBUGGING.md](DEBUGGING.md)** | Every bug hit on this board: symptom, cause, fix, and what's still open |
 | **[AGENTS.md](AGENTS.md)** | Operating notes for AI assistants — gotchas that cause silent failures, key files, deferred items |
 
+Datasheets and the reference manual are kept locally (git-ignored, ~12 MB) in
+`STM32F411CEU6/` — the MCU datasheet, the RM, and a pinout image. `Drivers/`
+and `Middlewares/` are ST's vendored HAL and USB device library.
+
 Single-source-of-truth rule: the **clock tree is in README → Clock Configuration**,
 the **pin map is in WIRING.md**, and the **gotchas are in AGENTS.md**. Code
 comments reference those rather than restating numbers, so there is exactly one
