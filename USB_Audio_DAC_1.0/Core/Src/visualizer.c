@@ -92,33 +92,31 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 /* Boot animation pacing.
  *
  * HARD BUDGET: Visualizer_Init() runs after MX_USB_DEVICE_Init(), so a slow
- * boot starves the USB host's enumeration window. There is a reverted commit
+ * boot eats into the host's enumeration window. There is a reverted commit
  * in this repo's history ("move Visualizer_Init after USB enumeration to
- * avoid host timeout"), which is exactly this failure. The previous splash
- * ran ~1.75 s + 150 ms; keep this one at or under that.
+ * avoid host timeout"), which is exactly this failure.
  *
- * 27 steps x 45 ms = 1.22 s of animation plus a 420 ms READY hold
- * ~= 1.64 s total, plus ~40 ms of one-off backdrop painting. Well inside
- * the old ~1.9 s budget.
+ * Budget with the current numbers: backdrop ~32 ms + 54 ticks x 55 ms
+ * = 2.97 s + 500 ms READY hold ~= 3.5 s, inside the 5 s the owner signed
+ * off on. If enumeration ever gets flaky, BOOT_STEP_DELAY_MS is the dial.
  *
- * Per-step cost is deliberately O(one grid line), not O(full screen): a
- * full 128x128 repaint is 32768 bytes ~= 21.8 ms at the 12 MHz SPI1 clock,
- * which would blow the whole budget in ten frames. */
-#define BOOT_STEP_DELAY_MS    45
-#define BOOT_HOLD_MS          420
+ * Per-tick cost is deliberately O(one grid line + one short string), not
+ * O(full screen): a full 128x128 repaint is 32768 bytes ~= 21.8 ms at the
+ * 12 MHz SPI1 clock, which would blow the whole budget in ten frames.
+ */
+#define BOOT_TICKS              54
+#define BOOT_STEP_DELAY_MS      55
+#define BOOT_HOLD_MS            500
 
 /* Scene geometry (retro sun + perspective grid). The grid occupies the
  * lower third; the sun sits above the horizon, centred, with the title
  * stack above that. Every element is placed to stay inside
  * ST7735_USABLE_BOTTOM (125) -- the last 3 rows are never displayed. */
-#define SUN_TOP          40
-#define SUN_R            28     /* diameter; r = SUN_R/2 = 14, so x spans 50..78 */
-#define SUN_SLICE_H      2     /* 1 px cut line every (SUN_SLICE_H+1) rows */
-#define HORIZON_Y        67     /* horizon line; the disc's lower edge   */
+#define SUN_TOP          42
+#define SUN_R            24     /* diameter; r = SUN_R/2 = 12, so x spans 52..76 */
+#define SUN_SLICE_H      3     /* 3 lit rows then a 2 px cut line        */
+#define HORIZON_Y        67     /* horizon line, just under the disc       */
 #define SUN_CX           64
-/* Scanlines cover ONLY the sun band. Running them over the title stack
- * stripes the glyphs and hurts legibility; over the disc they are the
- * whole point. */
 
 /* Title stack, then the progress bar and status BETWEEN the horizon and
  * the grid. Nothing overlaps the grid: an earlier layout put the bar and
@@ -135,18 +133,23 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 /* Grid gets the whole bottom band to itself. */
 #define GRID_TOP         88
 #define GRID_BOTTOM      118
-#define GRID_ROWS        8      /* horizontal lines, both endpoints included */
+#define GRID_ROWS        6      /* horizontal lines, both endpoints included */
+#define GRID_RAYS        4      /* +/- this many rays either side of centre     */
 
-/* Boot status steps. One per animation phase; short enough to clear in
- * 8x8 and cheap enough to redraw every step (~64 B per character). */
+/* Boot phases. These are the words the splash actually shows, in order.
+ *
+ * The animation runs BOOT_TICKS ticks, but only changes word every
+ * BOOT_WORD_TICKS of them, so each word stays on screen long enough to be
+ * read instead of strobing past. A 27-tick run changed the word on almost
+ * every tick, which is both unreadable and what made the stale-edge bug so
+ * obvious. */
 static const char *const boot_status[] = {
-    "CLOCKS", "CLOCKS", "PLL",   "PLL",   "I2S",   "I2S",   "I2S",
-    "DMA",   "DMA",   "USB",   "USB",   "USB FS","RING",  "RING",
-    "I2S",   "I2S",   "I2S",   "TFT",   "TFT",   "MIX",   "MIX",
-    "OUT",   "OUT",   "OUT",   "CHECK", "CHECK", "READY"
+    "CLOCKS", "PLL", "I2S", "DMA", "USB FS", "RING", "TFT", "MIX",
+    "OUT", "CHECK", "READY"
 };
-/* Derived from the table, so the two can never drift apart. */
-#define BOOT_STEPS  ((int32_t)(sizeof(boot_status) / sizeof(boot_status[0])))
+#define BOOT_WORDS  ((int32_t)(sizeof(boot_status) / sizeof(boot_status[0])))
+/* Ticks each word is held. Derived, so words and ticks cannot disagree. */
+#define BOOT_WORD_TICKS  ((int32_t)((BOOT_TICKS + BOOT_WORDS - 1) / BOOT_WORDS))
 
 /* Cyberpunk Neon palette (RGB565, from the design spec 4.2 + RescuePulse). */
 #define COL_BG          0x0000  /* pure black                    */
@@ -428,7 +431,7 @@ static void draw_boot_backdrop(void)
 
     /* Converging verticals: they meet at the vanishing point on the
      * horizon centre, which is what sells the perspective. */
-    for (i = -6; i <= 6; i++) {
+    for (i = -GRID_RAYS; i <= GRID_RAYS; i++) {
         int16_t x_bottom = (int16_t)(SUN_CX + (i * (ST7735_WIDTH / 12)));
 
         if ((x_bottom < 0) || (x_bottom >= ST7735_WIDTH)) {
@@ -458,47 +461,60 @@ static void draw_boot_backdrop(void)
     ST7735_DrawStringCentered(BOOT_READY_Y, "READY", COL_DIM, COL_BG, 1);
 }
 
-/* Boot splash: static backdrop once, then BOOT_STEPS cheap frames. */
+/* Boot splash: static backdrop once, then BOOT_TICKS cheap frames. */
 static void show_boot_animation(void)
 {
-    int16_t step;
+    int32_t tick;
+    int32_t shown = -1;   /* index of the word currently on the glass */
+    const char *last = NULL;
 
     draw_boot_backdrop();
 
-    for (step = 0; step < BOOT_STEPS; step++) {
+    for (tick = 0; tick < BOOT_TICKS; tick++) {
+        int32_t word  = tick / BOOT_WORD_TICKS;
         int16_t filled;
+        uint16_t col;
+
+        if (word >= BOOT_WORDS) {
+            word = BOOT_WORDS - 1;
+        }
 
         /* Advance the grid's travelling highlight (~1.4 ms). */
-        draw_boot_grid((int16_t)(step % GRID_ROWS));
+        draw_boot_grid((int16_t)(tick % GRID_ROWS));
 
-        /* Status line. ERASE the whole band first: consecutive status
-         * strings have different lengths ("CLOCKS" is 6 chars, "DMA" is
-         * 3), so centring a shorter one over a longer one leaves the
-         * previous string's end pixels behind. Redrawing in place without
-         * clearing produced overlapping garbage -- legible as neither
-         * word on the glass. */
-        ST7735_FillRect(0, BOOT_READY_Y, ST7735_WIDTH, 8, COL_BG);
-        ST7735_DrawStringCentered(BOOT_READY_Y, boot_status[step], COL_TEXT_DIM, COL_BG, 1);
-
-        /* Progress fill, 2 px per step, colour-evolving like the old splash. */
-        filled = (int16_t)((step * (BOOT_BAR_W - 2)) / (BOOT_STEPS - 1));
-        {
-            uint16_t col;
-            if (filled < (BOOT_BAR_W / 3)) {
-                col = COL_LOWER;
-            } else if (filled < (2 * BOOT_BAR_W / 3)) {
-                col = COL_MID;
-            } else {
-                col = COL_UPPER;
-            }
-            ST7735_FillRect(BOOT_BAR_X, BOOT_BAR_Y, filled, BOOT_BAR_H, col);
+        /* Status line. Erase the whole band before drawing, and only
+         * redraw when the word actually changes. Consecutive words have
+         * different lengths ("CLOCKS" is 6, "DMA" is 3), so centring a
+         * short word over a long one leaves the long one's end pixels
+         * behind -- measured at up to 30 stray pixels per transition,
+         * which is what made the line unreadable. The erase is what
+         * fixes it; skipping unchanged words is just less SPI traffic. */
+        if (boot_status[word] != last) {
+            ST7735_FillRect(0, BOOT_READY_Y, ST7735_WIDTH, 8, COL_BG);
+            ST7735_DrawStringCentered(BOOT_READY_Y, boot_status[word],
+                                      COL_TEXT_DIM, COL_BG, 1);
+            last = boot_status[word];
+            shown = word;
         }
+        (void)shown;
+
+        /* Progress fill, colour-evolving like the old splash. */
+        filled = (int16_t)((tick * (BOOT_BAR_W - 2)) / (BOOT_TICKS - 1));
+        if (filled < (BOOT_BAR_W / 3)) {
+            col = COL_LOWER;
+        } else if (filled < (2 * BOOT_BAR_W / 3)) {
+            col = COL_MID;
+        } else {
+            col = COL_UPPER;
+        }
+        ST7735_FillRect(BOOT_BAR_X, BOOT_BAR_Y, filled, BOOT_BAR_H, col);
 
         HAL_Delay(BOOT_STEP_DELAY_MS);
     }
 
     /* Final state: solid bar, green READY. */
     ST7735_FillRect(BOOT_BAR_X, BOOT_BAR_Y, BOOT_BAR_W, BOOT_BAR_H, COL_OK);
+    ST7735_FillRect(0, BOOT_READY_Y, ST7735_WIDTH, 8, COL_BG);
     ST7735_DrawStringCentered(BOOT_READY_Y, "READY", COL_OK, COL_BG, 1);
     HAL_Delay(BOOT_HOLD_MS);
 }
