@@ -1,22 +1,24 @@
 /* Core/Src/visualizer.c
- * 10-band rainbow LED-block spectrum visualizer (ST7735 128x128) in a
+ * 12-band rainbow LED-block spectrum visualizer (ST7735 128x128) in a
  * RescuePulse-style dark skin.
  *
  * - RescuePulse layout language: full-width dark-slate header band with
- *   centered device title, dark panel frame around the spectrum, big 2x
- *   status text on the splash, small 1x gray detail lines.
+ *   the device name left-anchored and the rate stamp right-anchored
+ *   against the same margin, a dark panel frame around the spectrum, and
+ *   small 1x gray detail lines. Only the splash's "AUDIO" word is drawn
+ *   at 2x; every other string on the device is 1x.
  * - Each bar is a column of stacked LED blocks (6 px block, 1 px gap).
  *   Heights and tops snap to whole blocks, so a bar always reads as
  *   discrete blocks piled on one another, never a solid rectangle.
- * - Every column gets its own color pulled from a 10-step rainbow:
+ * - Every column gets its own color from a 12-entry rainbow:
  *   red -> orange -> chartreuse -> green -> spring green -> cyan ->
- *   azure -> blue-violet -> violet -> pink, left to right. Gaps and the
- *   panel interior stay pure black.
+ *   azure -> blue-violet -> violet -> pink -> magenta -> neon pink, left
+ *   to right. Gaps and the panel interior stay pure black.
  * - Bars are smoothed (fast-but-gradual rise, relaxed fall) and peaked
  *   by a 2 px hot-pink dot that floats above the stack as it decays.
- * - Boot splash runs ~1.9 s (46 fill steps x 38 ms + READY hold) so the
- *   loading meter is readable but still under 2 s.
- * - Text uses the 8x8 row-major font (2x for splash titles).
+ * - Boot splash runs ~3.5 s (54 ticks x 55 ms + a 500 ms READY hold).
+ * - Text uses the single 8x8 row-major font in font8x8.h; there is no
+ *   second font table in the project.
  */
 
 #include "visualizer.h"
@@ -117,7 +119,7 @@ static void build_rate_stamp(void)
 typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1];
 
 /* Label x positions, centred under the band groups the FFT actually
- * produces (2 bass / 6 mid / 4 high at 48 kHz: 47-328, 328-3328,
+ * produces (2 bass / 6 mid / 4 high at 48 kHz: 47-328, 328-4406,
  * 4406-13172 Hz). Bar i spans x = MARGIN_X + i*(BAR_W+BAR_GAP) and is
  * BAR_W wide, so its centre is 8 + i*10.
  *   bass  bands 0-1  -> centres 8,18    -> group centre 13
@@ -330,18 +332,19 @@ static void draw_panel_frame(void)
 }
 
 /* ============================================================================
- * BOOT SPLASH — retro sun + perspective grid + CRT scanlines
+ * BOOT SPLASH — retro sun + perspective grid
  * ============================================================================
  * Deliberately built from row-level primitives only (FillRect / DrawHLine),
  * with no framebuffer and no new driver primitives, because SPI1 runs at
  * 12 MHz: one full 128x128 repaint is 32768 B ~= 21.8 ms. Everything that
  * stays still is painted once in draw_boot_backdrop(); each animation step
- * then touches only a single grid row (256 B ~= 0.17 ms) plus a short
- * status string, so the whole splash stays far inside the ~1.7 s budget
- * that USB enumeration needs.
+ * then repaints the whole 6-line grid (~2 KB ~= 1.4 ms) plus a short status
+ * string, so a full-screen repaint never appears inside the loop. Total
+ * splash cost is ~3.5 s of wall clock, 99 % of which is the deliberate
+ * BOOT_STEP_DELAY_MS pacing rather than drawing.
  *
- * A filled disc needs no driver support either: each row's half-width is
- * sqrt(r*r - dy*dy), so the sun is just a run of FillRect calls.
+ * A filled disc needs no driver support either: each row's half-width solves
+ * hw^2 + dy^2 <= r^2, so the sun is just a run of FillRect calls.
  * ==========================================================================*/
 
 /* Band colour for a sun row, ramped across the VISIBLE part of the disc.
@@ -375,8 +378,8 @@ static uint16_t sun_color_for_row(int16_t y)
  * an earlier version advanced one row per step and erased the row behind
  * it, which ran off the bottom of the band and started deleting the
  * remaining rows (the grid visibly emptied out halfway through the
- * splash). Repainting 8 lines is ~2 KB ~= 1.4 ms at 12 MHz, so the
- * correct version is also the cheap one.
+ * splash). Repainting all GRID_ROWS (6) lines is ~1.5 KB ~= 1 ms at
+ * 12 MHz, so the correct version is also the cheap one.
  *
  * The motion is a highlight sweeping down the grid: each line is tinted by
  * how far behind the travelling front it is, which reads as the floor
@@ -408,11 +411,11 @@ static void draw_boot_grid(int16_t phase)
     }
 }
 
-/* Paint the banded sun disc. Every SUN_SLICE_H-pixel cut line is skipped,
- * leaving black stripes across the disc -- that IS the scanline effect,
- * and confining it to the disc matters: an earlier version painted dark
- * scanlines across the full screen width, which tinted the black sky navy
- * and turned the whole upper half into a striped rectangle. */
+/* Paint the banded sun disc. Every SUN_BAND_GAP-row cut is skipped,
+ * leaving black stripes across the disc -- banding confined to the disc is
+ * deliberate: an earlier version painted dark scanlines across the full
+ * screen width, which tinted the black sky navy and turned the whole
+ * upper half into a striped rectangle. */
 static void draw_boot_sun(void)
 {
     int16_t y;
@@ -564,7 +567,7 @@ static void show_boot_animation(void)
             word = BOOT_WORDS - 1;
         }
 
-        /* Advance the grid's travelling highlight (~1.4 ms). */
+        /* Advance the grid's travelling highlight (~1 ms). */
         draw_boot_grid((int16_t)(tick % GRID_ROWS));
 
         /* Status line. Erase the whole band before drawing, and only
@@ -675,7 +678,9 @@ void Visualizer_Update(void)
         uint8_t raw_new;
         uint8_t new_h;
 
-        /* Merge the two source FFT bands, keeping the louder one. */
+        /* Pick this column's source band height. merge_lo/merge_hi are the
+         * identity today (1:1 passthrough), so this is just bands[i]; the
+         * two-sided form is kept so band pairing stays a table edit. */
         tgt = (float)bands[merge_lo[i]];
         if ((float)bands[merge_hi[i]] > tgt) {
             tgt = (float)bands[merge_hi[i]];

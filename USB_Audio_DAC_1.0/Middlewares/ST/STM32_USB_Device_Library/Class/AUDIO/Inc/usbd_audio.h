@@ -159,12 +159,26 @@ typedef struct
 {
   uint32_t alt_setting;
   /* buffer[] is the USB isochronous OUT circular buffer (logical size
-   * AUDIO_TOTAL_BUF_SIZE = 7040 bytes).  The extra AUDIO_OUT_PACKET_MAX
-   * bytes after the logical end are a spill pad: the HAL copies each
-   * received packet linearly to &buffer[wr_ptr] before DataOut sees the
-   * rollback, so a 90-byte long frame armed at wr_ptr=6951..7039 would
-   * write past the array and clobber the struct fields below.  The pad
-   * absorbs the overshoot (worst copy end = 7039+90 = 7129 <= 7130).
+   * AUDIO_TOTAL_BUF_SIZE = 96 * 80 = 7680 bytes).  The extra
+   * AUDIO_OUT_PACKET_MAX bytes after the logical end are a spill pad: the
+   * HAL copies each received packet linearly to &buffer[wr_ptr] before
+   * DataOut sees the rollback, so a copy that starts past the logical end
+   * would run off the array and clobber the struct fields below.
+   *
+   * The pad is still mandatory, but NOT for the reason originally written
+   * here. That text described the 44.1 kHz "long frame": 88 nominal bytes
+   * with 90 every 10th frame, which left wr_ptr off a 90-byte grid and
+   * overshot the end. At 48 kHz every frame is exactly 96 bytes and
+   * 7680 % 96 == 0, so wr_ptr stays 96-aligned and a FULL packet can no
+   * longer overshoot.
+   *
+   * What still overshoots is the off-grid case: a short or zero-length
+   * packet (a poll that carries fewer fresh bytes than a full frame) can
+   * leave wr_ptr anywhere, e.g. 7679. Worst-case copy end is then
+   * 7679 + 96 = 7775 <= 7776, exactly the declared array size. Without
+   * the pad that write lands on wr_ptr/rd_ptr/control -- which is what
+   * caused the original screeching and hard faults.
+   *
    * All circular logic still wraps at AUDIO_TOTAL_BUF_SIZE; the pad
    * bytes are never consumed by Sync or Refill.
    * The static malloc pool is sizeof-derived, so it grows automatically. */

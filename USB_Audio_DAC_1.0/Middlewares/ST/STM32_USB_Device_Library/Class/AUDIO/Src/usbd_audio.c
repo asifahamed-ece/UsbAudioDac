@@ -301,7 +301,7 @@ __ALIGN_BEGIN static uint8_t USBD_AUDIO_CfgDesc[USB_AUDIO_CONFIG_DESC_SIZ] __ALI
   USB_DESC_TYPE_ENDPOINT,               /* bDescriptorType */
   AUDIO_OUT_EP,                         /* bEndpointAddress 1 out endpoint */
   USBD_EP_TYPE_ISOC,                    /* bmAttributes */
-  LOBYTE(AUDIO_OUT_PACKET_MAX),         /* wMaxPacketSize (mono) = 90 bytes */
+  LOBYTE(AUDIO_OUT_PACKET_MAX),         /* wMaxPacketSize (mono) = 96 bytes */
   HIBYTE(AUDIO_OUT_PACKET_MAX),
   AUDIO_FS_BINTERVAL,                   /* bInterval */
   0x00,                                 /* bRefresh */

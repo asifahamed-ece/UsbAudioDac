@@ -5,21 +5,37 @@
  *
  * CONCURRENCY
  * -----------
- *   head is only written by the producer (USB ISR).
- *   tail is only written by the consumer (I2S DMA half/full ISR).
- *   They never touch the same memory location, so no spinlock
- *   or __disable_irq is needed.
+ *   The textbook SPSC rule still holds and is the invariant to preserve:
+ *   head is written only by the producer, tail only by the consumer, and
+ *   they never share a location, so no lock or __disable_irq is needed
+ *   for the steady-state path.
  *
- *   The producer reads tail (to check "is the ring full?") and
- *   the consumer reads head (to check "is the ring empty?").
- *   On Cortex-M4, a 16-bit aligned load is atomic — you cannot
- *   see a half-written value. So reading the other side's index
- *   is also safe.
+ *   In THIS build the two ends are not even concurrent. Both run inside
+ *   the same handler, DMA1_Stream4_IRQHandler, in a fixed order:
  *
- *   Caveat: if any of these functions are ever called from main
- *   loop while the ISRs are running, wrap the index update in
- *   __disable_irq / __enable_irq. Currently we only call them
- *   from the two ISRs, so we're safe.
+ *     DMA1_Stream4_IRQHandler        (NVIC priority 0, main.c)
+ *       1. HalfTransfer_CallBack_FS() -> USBD_AUDIO_Sync()
+ *            -> AudioCmd(AUDIO_CMD_PLAY) -> RingBuffer_Write()  [producer]
+ *       2. AudioI2S_RefillHalfA()   -> RingBuffer_Read()         [consumer]
+ *
+ *   USB audio therefore reaches the ring only by being deferred out of
+ *   haudio->buffer and pushed in from the I2S DMA ISR -- NOT from
+ *   OTG_FS_IRQHandler. Step 1 must stay ahead of step 2, or the consumer
+ *   would drain a ring the producer has not refilled yet.
+ *
+ *   KNOWN HAZARD (not fixed, documented): RingBuffer_Reset() is the one
+ *   call that does NOT come from that handler. It is reached via
+ *   AUDIO_CMD_START on the control path, i.e. in OTG_FS_IRQHandler
+ *   context at NVIC priority 3 (usbd_conf.c) -- which the priority-0 DMA
+ *   handler can preempt. If preemption lands between the two stores, tail
+ *   is reset after the ISR already advanced head, and the ring briefly
+ *   replays stale buffer content (an audible click at stream start, not
+ *   memory corruption). Making Reset atomic would mean masking interrupts
+ *   around the two stores, or moving the reset onto the DMA handler.
+ *
+ *   Reading the other side's index is safe regardless: head and tail are
+ *   uint16_t, and an aligned 16-bit load is atomic on Cortex-M4, so no
+ *   half-written value is observable. RingBuffer_Space() reads both.
  */
 
 #include "ring_buffer.h"

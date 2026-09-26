@@ -1,7 +1,7 @@
 /* Core/Src/audio_fft.c
  *
  * 1024-point real FFT → 12 perceptual band heights for the TFT
- * visualizer (2 bass / 6 mid / 4 high, ~43 Hz → ~12 kHz, log-spaced).
+ * visualizer (2 bass / 6 mid / 4 high, ~47 Hz → ~13 kHz, log-spaced).
  *
  * CONCURRENCY (I2S DMA ISR vs main loop)
  * ---------------------------------------
@@ -29,7 +29,8 @@
  * -------
  *   Absolute-dBFS band mapping (see AUDIO_FFT_FULL_SCALE below). A
  *   linear dB window of AUDIO_FFT_DB_RANGE maps [−RANGE, 0] dB →
- *   [0, 90]. The 4 high bands (>= ~4 kHz) get a +6 dB presence lift
+ *   [0, AUDIO_FFT_MAX_HEIGHT] (84). The 4 high bands (>= ~4.4 kHz) get a
+ *   +6 dB presence lift
  *   (band_presence[]) so music's naturally quieter highs animate —
  *   the display is hearing-focused, not a flat analyzer.
  */

@@ -38,18 +38,19 @@
 
 typedef struct {
     int16_t           buffer[RING_BUFFER_SIZE];
-    volatile uint16_t head;   /* Producer (USB) writes here. */
-    volatile uint16_t tail;   /* Consumer (I2S) reads here.  */
+    volatile uint16_t head;   /* Producer writes here.  */
+    volatile uint16_t tail;   /* Consumer writes here.  */
 } RingBuffer_t;
 
 /* The one and only ring instance, defined in ring_buffer.c. */
 extern RingBuffer_t audio_ring;
 
-/* Producer-side API (USB ISR) */
+/* Producer-side API (runs in the I2S DMA ISR via USBD_AUDIO_Sync, and in
+ * the OTG_FS control path for Reset alone -- see the hazard note in .c) */
 void     RingBuffer_Reset(void);
 uint16_t RingBuffer_Write(const int16_t *src, uint16_t n_samples);
 
-/* Consumer-side API (I2S ISR or main loop, see notes in .c) */
+/* Consumer-side API (I2S DMA ISR) */
 uint16_t RingBuffer_Read(int16_t *dst, uint16_t n_samples);
 uint16_t RingBuffer_Available(void);
 uint16_t RingBuffer_Space(void);

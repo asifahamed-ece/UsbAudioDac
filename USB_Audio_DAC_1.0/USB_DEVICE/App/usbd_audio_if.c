@@ -192,9 +192,10 @@ static int8_t AUDIO_AudioCmd_FS(uint8_t* pbuf, uint32_t size, uint8_t cmd, uint3
       break;
 
     case AUDIO_CMD_PLAY:
-      /* Producer side: copy audio data from the USB intermediate buffer
-       * into our ring. The I2S consumer pulls samples out at 44.1 kHz,
-       * keeping the ring ~50% full.
+       /* Producer side: copy audio data from the USB intermediate buffer
+        * into our ring. The I2S consumer pulls samples out at 48 kHz.
+        * No target fill level is enforced here; the ring simply holds
+        * whatever the host has sent since the last drain.
        *
        * 'offset' is the byte offset into pbuf where fresh data starts
        * (the haudio->buffer circular buffer read pointer). 'size' is the

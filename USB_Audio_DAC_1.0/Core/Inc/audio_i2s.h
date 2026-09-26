@@ -12,7 +12,7 @@
  * the second half. So one full buffer = two callbacks = 2× the
  * half-period.
  *
- * AUDIO_I2S_BUFFER_SIZE = 880 int16 = 440 stereo frames = 10 ms @ 44.1 kHz.
+ * AUDIO_I2S_BUFFER_SIZE = 880 int16 = 440 stereo frames = 9.2 ms @ 48 kHz.
  * Half = 440 int16 = 220 stereo frames = 5 ms ≈ 5 USB packets of mono.
  *
  * MUST be a multiple of 4 so the DMA half (size/2) is an even number of

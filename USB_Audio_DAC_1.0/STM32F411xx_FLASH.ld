@@ -59,11 +59,19 @@ _sstack = _estack - _Min_Stack_Size;
 _Min_Heap_Size = 0x1000;      /* required amount of heap  */
 _Min_Stack_Size = 0x1000;/* required amount of stack */
 
-/* Specify the memory areas */
+/* Specify the memory areas
+ *
+ * NOTE: there is deliberately NO CCMRAM region here. The STM32F411 has no
+ * CCM data SRAM: 0x10000000 is unmapped on this part, and touching it
+ * BusFaults/HardFaults immediately. The 64 KB CCM block exists on the
+ * F405/407/415/417/427/429/437/439/469/479 family but NOT on the
+ * F401/410/411/412/413 -- ST's own linker templates confirm it, defining a
+ * CCMRAM region for the former and not the latter. All SRAM, including
+ * CPU-only buffers, lives in the 128 KB of standard SRAM below.
+ */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 128K
-CCMRAM (xrw)   : ORIGIN = 0x10000000, LENGTH = 64K
 FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 512K
 }
 
@@ -167,19 +175,23 @@ SECTIONS
   } >RAM AT> FLASH
 
 
-  /* CPU-only uninitialized data in CCMRAM (64K @ 0x10000000).
-   * CCMRAM is NOT accessible by DMA, so DMA buffers must stay
-   * in main RAM — place only CPU-used data here via
-   * __attribute__((section(".ccmram"))). */
-  .ccmram (NOLOAD) :
-  {
-    . = ALIGN(4);
-    _sccmram = .;
-    *(.ccmram)
-    *(.ccmram*)
-    . = ALIGN(4);
-    _eccmram = .;
-  } >CCMRAM AT> CCMRAM
+  /* Intentionally NO .ccmram output section.
+   *
+   * An earlier version of this script carried an empty `.ccmram` section
+   * plus a MEMORY region for 0x10000000, inherited from an F4x7-family
+   * template. That was a footgun: STM32F411 has no CCM data SRAM, so any
+   * object tagged __attribute__((section(".ccmram"))) would have been
+   * placed in an unmapped address range and HardFaulted on first touch --
+   * with a link that still succeeded, so nothing warned you.
+   *
+   * Both the region and the section are now gone, so a stray tag fails the
+   * link ("section .ccmram will not fit" / "no memory region") instead of
+   * building a booby trap. If you ever port this to a part that DOES have
+   * CCM (F405/407/415/417/427/429/437/439/469/479), copy the region from
+   * that part's ST template rather than re-adding it here by hand. For
+   * this target, put CPU-only data in normal .bss at 0x20000000 (128 KB,
+   * plenty of room) and keep DMA-reachable buffers in main RAM.
+   */
 
   /* Uninitialized data section */
   . = ALIGN(4);

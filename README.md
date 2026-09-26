@@ -20,7 +20,7 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 - **USB Audio Class 1.0** — Plug-and-play USB speaker on Linux, Windows, macOS
 - **48 kHz / 16-bit / Mono** audio over USB isochronous endpoint (exact rate; see Clock Configuration)
 - **I2S + DMA** output to MAX98357A DAC + 3 W Class D amplifier
-- **Lock-free SPSC ring buffer** — 23 ms of audio headroom between USB and I2S
+- **Lock-free SPSC ring buffer** — 42.7 ms of audio headroom between USB and I2S
 - **Rotary encoder volume control** via software gain + mute button (Phase 4)
 - **ST7735S TFT visualizer** with real-time audio level (Phase 5)
 - **FreeRTOS-based** multitasking architecture (Phase 6)
@@ -100,13 +100,13 @@ STM32F411 Black Pill
     │   usbd_audio_if.c ── AUDIO_CMD_PLAY → RingBuffer_Write()
     │       │
     │       ▼
-    │   ring_buffer.c ──── SPSC ring, 1024 int16 = 23 ms headroom
+    │   ring_buffer.c ──── SPSC ring, 2048 int16 = 42.7 ms headroom
     │       │
     │       ▼
     │   audio_i2s.c ────── RefillHalfA/B: mono → L+R stereo duplication
     │       │
     │       ▼
-    ├── I2S2 + DMA1 ────── circular DMA, ping-pong halves (10 ms each)
+    ├── I2S2 + DMA1 ────── circular DMA, ping-pong halves (9.2 ms each)
     │       │
     │       ▼
     │   MAX98357A ──────── I2S DAC + Class D amp
@@ -131,7 +131,7 @@ STM32F411 Black Pill
 ```bash
 cd USB_Audio_DAC_1.0
 make                    # Build (arm-none-eabi-gcc)
-make test               # Host-simulated ring-buffer unit tests (host gcc, no ARM toolchain)
+make test               # Host unit tests: ring buffer + FFT + font render (host gcc, no ARM toolchain)
 make size               # Per-section memory usage
 make flash              # Flash via st-flash
 make clean              # Clean
@@ -166,10 +166,17 @@ UsbAudioDac/
 │   │   │   ├── main.c             # System init, clock config, I2S + USB init
 │   │   │   ├── audio_i2s.c        # I2S DMA consumer (ring → stereo frames)
 │   │   │   ├── ring_buffer.c      # Lock-free SPSC ring buffer
+│   │   │   ├── audio_fft.c        # 1024-pt FFT → 12 perceptual band heights
+│   │   │   ├── visualizer.c       # Boot splash + spectrum screen, layout
+│   │   │   ├── st7735.c           # ST7735S SPI driver (owns SPI1)
+│   │   │   ├── font8x8.h          # The one and only font
 │   │   │   └── stm32f4xx_it.c     # Interrupt handlers + HAL callbacks
 │   │   └── Inc/
 │   │       ├── audio_i2s.h        # Buffer sizing, refill API
-│   │       └── ring_buffer.h      # Ring buffer struct and API
+│   │       ├── ring_buffer.h      # Ring buffer struct and API
+│   │       ├── audio_fft.h        # FFT sizes, band count, height cap
+│   │       ├── st7735.h           # Panel geometry, bounds contract
+│   │       └── visualizer.h       # Init + update API
 │   ├── USB_DEVICE/
 │   │   ├── App/
 │   │   │   ├── usbd_audio_if.c    # USB audio → ring buffer bridge
@@ -177,16 +184,15 @@ UsbAudioDac/
 │   │   └── Target/
 │   │       ├── usbd_conf.c        # HAL PCD init, VBUS sensing disabled
 │   │       └── usbd_conf.h        # USBD_AUDIO_FREQ = 48000
-│   ├── tests/                     # Host-simulated ring-buffer unit tests
+│   ├── tests/                     # Host unit tests (ring buffer, FFT, font)
 │   ├── Drivers/                   # ST HAL + CMSIS (vendored)
 │   ├── Middlewares/               # ST USB Device Library (Audio class)
 │   ├── Makefile                   # GCC cross-compilation
-│   ├── STM32F411xx_FLASH.ld       # Linker script (512K flash, 128K RAM, 64K CCMRAM)
+│   ├── STM32F411xx_FLASH.ld       # Linker script (512K flash, 128K RAM — no CCM)
 │   └── USB_Audio_DAC_1.0.ioc      # CubeMX project file
 ├── README.md                      # This file — overview, hardware, build, status
 ├── WIRING.md                      # Full MCU↔peripheral pin map + CubeMX config
-├── IMPLEMENTATION_PLAN.md         # 8-phase plan with task breakdowns
-├── PROGRESS.md                    # Working log + changelog + debugging stories
+├── DEBUGGING.md                   # Every bug hit, why it happened, how it was fixed
 └── AGENTS.md                      # Project context for AI assistants
 ```
 
@@ -200,21 +206,29 @@ UsbAudioDac/
 | 1 | Clock tree: HSE → PLL → 48 MHz SYSCLK, PLLI2S → 192 MHz I2S (exact 48 kHz) | ✅ Complete |
 | 2 | I2S + DMA audio output (1 kHz test tone) | ✅ Complete |
 | 3 | USB Audio Class 1.0 device — PC plays music to speaker | ✅ Complete |
-| 3.5 | Reliability: CCMRAM + stack bump, host unit tests, IWDG watchdog | ✅ Complete |
+| 3.5 | Reliability: stack bump, host unit tests, IWDG watchdog | ✅ Complete |
 | 4 | Rotary encoder volume (software gain) + mute | ⏳ Planned |
-| 5 | ST7735S TFT audio visualizer + level meter | ⏳ Planned |
+| 5 | ST7735S TFT visualizer (12-band FFT + boot splash) | ✅ Complete — on `feat/boot-splash-horizon` |
 | 6 | FreeRTOS integration (4 tasks: Audio, Display, Encoder, Debug) | ⏳ Planned |
 | 7 | Polish, enclosure, final documentation | ⏳ Planned |
 
+> Phase 5 is built, flashed and verified on the glass, but lives on
+> `feat/boot-splash-horizon` and has **not** been merged to `main` yet. `main`
+> still contains a deleted 5x7 font — don't flash a build made from `main`.
+
 ### Key Debugging Stories
 
-Phase 3 had three silent-failure bugs that each took an evening to track down — all caused the device to enumerate correctly but play no audio:
+The device enumerated correctly and played nothing, repeatedly. Four independent
+bugs hid behind that one symptom — a bad VBUS sense line, a sample rate declared
+in one place but generated in another, `USBD_AUDIO_Sync` never being called by
+ST's library, and a +400 ppm clock error that produced periodic thuds minutes
+into playback rather than silence. Later, a whole set of display bugs that were
+invisible in code review: a transposed second font, a label clipped by rows the
+panel physically cannot show, a status line garbling its own words, and a
+`sqrt` approximation that drew a cone instead of a sun.
 
-1. **VBUS sensing** — Black Pill's PA9/VBUS line doesn't reliably trigger OTG FS comparator; fix was disabling `vbus_sensing_enable`
-2. **Sample rate mismatch** — Hardcoded `48000U` in `usbd_conf.h` overrode the .ioc's 44100 setting, causing ring over/underrun. *Later found a subtler variant of the same class of bug: the declared 44 100 Hz never matched the I2S2 hardware rate of 44 117.6 Hz either (+400 ppm), which drained the ring slowly. The device now runs exact 48 kHz — see Clock Configuration.*
-3. **Missing `USBD_AUDIO_Sync` call** — ST's library exports this function but never calls it internally; user must invoke it from I2S DMA callbacks
-
-> See [PROGRESS.md](PROGRESS.md) for the full debugging story and lessons learned.
+> **[DEBUGGING.md](DEBUGGING.md)** has the full story for each — symptom, why it
+> happened, and the fix.
 
 ---
 
@@ -267,11 +281,19 @@ Phase 3 had three silent-failure bugs that each took an evening to track down �
 
 ## Reference Documents
 
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — Full 8-phase plan with task breakdowns
-- [WIRING.md](WIRING.md) — Full MCU↔peripheral pin map + CubeMX config for upcoming phases
-- [PROGRESS.md](PROGRESS.md) — Phase-by-phase working log + changelog + debugging stories
-- [AGENTS.md](AGENTS.md) — Project context for AI assistants
-- `STM32F411CEU6/` — Datasheet and reference manual PDFs
+This repo keeps four documents, each with one job:
+
+| Document | Job |
+|----------|-----|
+| **README.md** (this file) | What it is, hardware, BOM, build/flash/verify, current architecture and status |
+| **[WIRING.md](WIRING.md)** | Full MCU↔peripheral pin map, amp configuration, CubeMX settings |
+| **[DEBUGGING.md](DEBUGGING.md)** | Every bug hit on this board: symptom, cause, fix, and what's still open |
+| **[AGENTS.md](AGENTS.md)** | Operating notes for AI assistants — gotchas that cause silent failures, key files, deferred items |
+
+Single-source-of-truth rule: the **clock tree is in README → Clock Configuration**,
+the **pin map is in WIRING.md**, and the **gotchas are in AGENTS.md**. Code
+comments reference those rather than restating numbers, so there is exactly one
+place to update when a value changes.
 
 ---
 

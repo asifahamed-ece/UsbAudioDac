@@ -9,6 +9,16 @@
  * Band map (design spec, Fs=44.1 kHz, N=1024, df≈43.07 Hz):
  *   band 0: 43–172 Hz    -> bins [1,4)      (bass floor, 60 Hz inside)
  *   band 4: 947–1378 Hz  -> bins [22,33)    (a 1 kHz tone lands here)
+ *
+ * NOTE ON SAMPLE_RATE BELOW: the device now runs at exactly 48000 Hz, but
+ * this probe signal is deliberately generated at 44100 Hz. band_start[] is
+ * a table of BIN INDICES, and the band boundaries themselves are unchanged
+ * by the rate change — only their Hz labels moved (+8.8 %, df 43.07 ->
+ * 46.875 Hz). Generating the probe at 44.1 kHz is what puts 1 kHz inside
+ * band 4 as the design spec intends; generating it at 48 kHz would put the
+ * same tone in band 3 and the assertion would have to change with it.
+ * Rescaling band_start[] to restore the original Hz labels is a separate
+ * cosmetic change, deliberately still open.
  */
 
 #include <math.h>
