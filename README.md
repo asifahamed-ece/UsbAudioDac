@@ -24,22 +24,14 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 - **Rotary encoder volume control** via software gain + mute button (Phase 4)
 - **ST7735S TFT visualizer** with real-time audio level (Phase 5)
 - **FreeRTOS-based** multitasking architecture (Phase 6)
-- **Low cost** — ~$8-10 in parts; most components already owned
+- **Low cost** — ~$8-10 in parts per unit (see Bill of Materials)
 
 ---
 
 ## Hardware
 
-| Component | Role | Status |
-|-----------|------|--------|
-| **STM32F411CEU6 Black Pill** | Main MCU (Cortex-M4, 100 MHz, 128 KB RAM, 512 KB Flash) | ✅ Owned |
-| **MAX98357A** | I2S DAC + Class D amp module (3 W @ 4 Ω, ~1.7 W @ 8 Ω) | ✅ Owned |
-| **8 Ω speaker** (DCR ≈ 7 Ω) | Mono audio output | ✅ Owned |
-| **ST7735S 1.4" TFT** | Audio visualizer display (128x128, SPI) | ✅ Owned |
-| **Rotary encoder (EC11)** | Volume control + mute button — *Phase 4, not built* | ⏳ Only if you do Phase 4 |
-| **ST-Link V2** | Flash programmer and debugger | ✅ Owned |
-| **Passive components (R, C)** | Decoupling, filter, debounce | ✅ Owned |
-| ~~USB-Serial adapter (CH340/CP2102)~~ | ~~`printf` debug over USART2~~ | ❌ **Dropped** — no UART in the firmware |
+The parts list is in [Bill of Materials](#bill-of-materials) below. This section
+covers how they connect.
 
 > **On amplifiers:** the MAX98357A is the *complete* DAC + amp for the mono speaker — it needs no second stage. The PAM8403 from the early plan was **descoped**: its line-level input cannot be driven from the MAX98357A's speaker-level output (cascading two power amps only distorts), so it had no role in a mono-speaker build. The 8 Ω speaker is verified by DCR: 7 Ω on the multimeter = nominal 8 Ω.
 
@@ -68,32 +60,23 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 
 ## Bill of Materials
 
-| Item | Qty | Cost | Status |
-|------|-----|------|--------|
-| STM32F411CEU6 Black Pill | 1 | $0 | ✅ Owned |
-| MAX98357A I2S DAC + amp | 1 | $0 | ✅ Owned |
-| 8 Ω speaker (DCR ~7 Ω) | 1 | $0 | ✅ Owned |
-| ST7735S 1.4" TFT (SPI) | 1 | $0 | ✅ Owned |
-| Resistors / capacitors | various | $0 | ✅ Owned |
-| ST-Link V2 | 1 | — | ✅ Owned |
-| USB-C cable, jumpers, breadboard | — | — | ✅ Owned |
-| Rotary encoder (EC11) + push button | 1 | ~$1 | ⏳ **Only for Phase 4** — see below |
-| **Total to buy** | | | **~$1, and only if you do Phase 4** |
+| Item | Qty | Role | Cost |
+|------|-----|------|------|
+| STM32F411CEU6 Black Pill | 1 | Main MCU — Cortex-M4, 100 MHz, 128 KB RAM, 512 KB flash | ~$4 |
+| MAX98357A module | 1 | I2S DAC + Class D amp (3 W @ 4 Ω, ~1.7 W @ 8 Ω) | ~$3 |
+| 8 Ω speaker (DCR ≈ 7 Ω) | 1 | Mono audio output | ~$2 |
+| ST7735S 1.4" TFT | 1 | Visualizer display, 128×128 SPI | ~$4 |
+| ST-Link V2 | 1 | Flash programmer / debugger | ~$5 |
+| Rotary encoder (EC11) | 1 | Volume + mute (Phase 4) | ~$1 |
+| Passives (R, C) | various | Decoupling, filtering, encoder pull-ups | ~$1 |
+| USB-C cable, jumpers, breadboard | — | Hookup | ~$5 |
+| **Total** | | | **~$8–10 per unit** |
 
-**Everything needed for the device as it stands today is already owned — total
-spend to get here: $0.** The EC11 encoder is the only outstanding part, and it
-buys you nothing that works yet: `AUDIO_VolumeCtl_FS` is a no-op and there is no
-software gain in the sample path, so **there is no volume control today**. Buy
-the encoder when you start Phase 4 (WIRING.md §C has the pinout).
-
-**Not needed:** a USB-serial (CH340/CP2102) adapter. The firmware has no UART —
-USART2 is never initialised, the UART driver isn't compiled, and
-`USBD_DEBUG_LEVEL` is `0`, so no `printf` is emitted. On-device debug output was
-dropped in favour of the IWDG watchdog and SWD/GDB. If you want it back, WIRING.md
-§E has the two-pin hookup.
+Volume and mute are Phase 4, so the device plays audio without the encoder.
 
 **Where to buy:** AliExpress (cheapest, slowest), Amazon (faster, pricier), or a
-local electronics shop for the EC11 and any passives.
+local electronics shop. No USB-serial adapter is listed because the firmware has
+no UART — debug output goes over SWD/GDB.
 
 ---
 
