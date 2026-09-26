@@ -22,8 +22,10 @@
 #include "visualizer.h"
 #include "st7735.h"
 #include "audio_fft.h"
+#include "usbd_conf.h"      /* USBD_AUDIO_FREQ — the one source of truth for the rate */
 #include "stm32f4xx_hal.h"
 #include <stdint.h>
+#include <string.h>         /* strlen, for right-aligning the rate stamp */
 
 /* Layout (Max bar height is pinned to the FFT's own cap so the
  * differential renderer can never draw outside the panel). */
@@ -41,6 +43,52 @@
 #define BAR_GAP        1
 #define MARGIN_X       4
 #define NBANDS         12
+
+/* Header band text. The device name is left-aligned; the rate stamp is
+ * right-aligned against the same 4 px margin, so the band reads as two
+ * anchored ends rather than one centred blob. */
+#define HEADER_TEXT_Y  4
+#define HEADER_PAD     4      /* left margin for the name, right for the stamp */
+#define RATE_STAMP_MAX_CHARS 4 /* worst case is 3 digits + 'k', e.g. "192k" */
+
+/* Compile-time guard: the two header strings must never overlap, even at
+ * the longest stamp the builder can produce. "SYNTHWAVE" is 9 x 8 = 72 px,
+ * so it ends at 76; the widest stamp starts at 128 - 4 - 32 = 92. */
+typedef char header_texts_must_not_collide[
+    ((HEADER_PAD + (9 * 8)) < (ST7735_WIDTH - HEADER_PAD - (RATE_STAMP_MAX_CHARS * 8))) ? 1 : -1];
+
+/* Header rate stamp, built from USBD_AUDIO_FREQ at init.
+ *
+ * Deliberately NOT a string literal, and deliberately NOT stringified with
+ * the preprocessor. This label has failed both ways already: it read
+ * "44.1k" after the device moved to 48 kHz, and the fix that tried to
+ * derive it printed the literal text "48000U / 1000", because `#` does not
+ * macro-expand its argument. Converting the digits at runtime sidesteps
+ * both failure modes -- it cannot go stale, and it cannot print an
+ * expression. */
+#define RATE_STAMP_BUF 6      /* "192k" + NUL */
+static char rate_stamp[RATE_STAMP_BUF];
+
+static void build_rate_stamp(void)
+{
+    uint32_t k = USBD_AUDIO_FREQ / 1000U;   /* 48000 -> 48 */
+    char rev[4];
+    int n = 0;
+    int i;
+
+    /* Pull decimal digits least-significant first, then reverse. */
+    do {
+        rev[n] = (char)('0' + (k % 10U));
+        n++;
+        k /= 10U;
+    } while ((k != 0U) && (n < 3));
+
+    for (i = 0; i < n; i++) {
+        rate_stamp[i] = rev[n - 1 - i];
+    }
+    rate_stamp[n]     = 'k';
+    rate_stamp[n + 1] = '\0';
+}
 
 /* Region label strip.
  *
@@ -183,6 +231,7 @@ static const char *const boot_status[] = {
 #define COL_SUN_TOP     0xF80F  /* hot magenta band               */
 #define COL_SUN_MID     0xFD20  /* orange band                    */
 #define COL_SUN_LOW     0xFFE0  /* gold band                      */
+#define COL_YELLOW      0xFFE0  /* header rate stamp (same gold)  */
 #define COL_GRID        0x033F  /* azure grid lines (leading)     */
 #define COL_GRID_MID    0x0228  /* mid grid lines                 */
 #define COL_GRID_FAR    0x0208  /* dimmer converging lines       */
@@ -567,13 +616,17 @@ void Visualizer_Init(void)
     /* Clear and prepare main interface */
     ST7735_FillScreen(COL_BG);
 
-    /* RescuePulse-style header band, with the device name centred in it.
-     * The name is the one piece of identity worth the header. The sample
-     * rate used to sit here too, but it read as noise and had already
-     * gone stale once. Colour is COL_UPPER, the same electric magenta the
-     * boot splash uses for SYNTHWAVE, so the two screens match. */
+    /* RescuePulse-style header band. Device name left-aligned, rate stamp
+     * right-aligned in yellow, so the band reads as two anchored ends.
+     * Name colour is COL_UPPER, the same electric magenta the boot splash
+     * uses for SYNTHWAVE, so the two screens match. */
     ST7735_FillRect(0, 0, ST7735_WIDTH, HEADER_H, COL_PANEL);
-    ST7735_DrawStringCentered(4, "SYNTHWAVE", COL_UPPER, COL_PANEL, 1);
+    ST7735_DrawString(HEADER_PAD, HEADER_TEXT_Y, "SYNTHWAVE", COL_UPPER, COL_PANEL);
+
+    build_rate_stamp();
+    ST7735_DrawString((int16_t)(ST7735_WIDTH - HEADER_PAD -
+                                ((int16_t)strlen(rate_stamp) * 8)),
+                      HEADER_TEXT_Y, rate_stamp, COL_YELLOW, COL_PANEL);
     ST7735_DrawHLine(0, SEP_Y, ST7735_WIDTH, COL_SEP);
 
     /* Spectrum panel: dark frame, black interior, baseline. */
