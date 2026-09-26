@@ -119,8 +119,6 @@ typedef char label_strip_must_fit[(LABEL_MAX_Y < ST7735_USABLE_BOTTOM) ? 1 : -1]
 /* Scanlines cover ONLY the sun band. Running them over the title stack
  * stripes the glyphs and hurts legibility; over the disc they are the
  * whole point. */
-#define SCANLINE_TOP     SUN_TOP
-#define SCANLINE_BOTTOM  (HORIZON_Y - 2)   /* keep the horizon crisp */
 
 /* Title stack, then the progress bar and status BETWEEN the horizon and
  * the grid. Nothing overlaps the grid: an earlier layout put the bar and
@@ -174,7 +172,6 @@ static const char *const boot_status[] = {
 #define COL_GRID        0x033F  /* azure grid lines (leading)     */
 #define COL_GRID_MID    0x0228  /* mid grid lines                 */
 #define COL_GRID_FAR    0x0208  /* dimmer converging lines       */
-#define COL_SCAN        0x18E3  /* CRT scanline tint (very dark)  */
 #define COL_DIM         0x4208  /* status text while pending      */
 
 /* One rainbow color per bar column, left -> right. Evenly spaced hues
@@ -337,44 +334,41 @@ static void draw_boot_grid(int16_t phase)
     }
 }
 
-/* Paint the banded sun disc. SUN_SLICE_H-pixel cut lines are punched back
- * out in COL_SUN_GAP, which is what makes it read as a synthwave sunset. */
+/* Paint the banded sun disc. Every SUN_SLICE_H-pixel cut line is skipped,
+ * leaving black stripes across the disc -- that IS the scanline effect,
+ * and confining it to the disc matters: an earlier version painted dark
+ * scanlines across the full screen width, which tinted the black sky navy
+ * and turned the whole upper half into a striped rectangle. */
 static void draw_boot_sun(void)
 {
     int16_t y;
+    int32_t r  = (int32_t)(SUN_R / 2);
+    int32_t cy = (int32_t)(SUN_TOP + (SUN_R / 2));
+    int32_t rr = r * r;
 
     for (y = SUN_TOP; y < (SUN_TOP + SUN_R); y++) {
-        int32_t dy = (int32_t)(y - (SUN_TOP + (SUN_R / 2)));
-        int32_t r  = (int32_t)(SUN_R / 2);
-        int32_t hw = r - dy;
-        int32_t sq = r * r - dy * dy;
+        int32_t dy = (int32_t)y - cy;
+        int32_t d2 = dy * dy;
+        int32_t hw = 0;
         int16_t half;
-        int16_t x0;
         uint16_t col;
 
-        if (sq < 0) {
-            sq = 0;
+        if (d2 > rr) {
+            continue;                      /* outside the disc entirely */
         }
-        if (hw < 0) {
-            hw = 0;
+
+        /* Exact half-width: the widest hw with hw^2 + dy^2 <= r^2, found
+         * by walking x outward. At most r (14) iterations per row, so the
+         * whole disc costs a few hundred adds and no division at all.
+         *
+         * Do NOT replace this with an integer Newton sqrt
+         * (sqrt(x) ~= (b + x/b)/2): at the disc's poles x is 0, so x/b is
+         * 0 and the iteration collapses b toward 0 instead of settling,
+         * eating the top of the disc. That is what drew a cone. */
+        while (((hw + 1) * (hw + 1) + d2) <= rr) {
+            hw++;
         }
-        if (hw > r) {
-            hw = r;
-        }
-        /* Integer sqrt: hw = floor(sqrt(r^2 - dy^2)). Newton-free, ~6 iters. */
-        {
-            int32_t v = sq;
-            int32_t b = r;
-            int32_t i;
-            for (i = 0; i < 8; i++) {
-                int32_t nb = (b + (v / b)) / 2;
-                if (nb == b) {
-                    break;
-                }
-                b = nb;
-            }
-            half = (int16_t)b;
-        }
+        half = (int16_t)hw;
         if (half <= 0) {
             continue;
         }
@@ -384,22 +378,37 @@ static void draw_boot_sun(void)
             continue;
         }
 
-        x0 = (int16_t)(SUN_CX - half);
         col = sun_color_for_row(y);
-        ST7735_FillRect(x0, y, (int16_t)(half * 2), 1, col);
+        ST7735_FillRect((int16_t)(SUN_CX - half), y, (int16_t)(half * 2), 1, col);
     }
 }
 
-/* Horizontally interleaved dark lines over the upper scene, for the CRT
- * look. Drawn once, not per frame. */
-static void draw_boot_scanlines(void)
+/* Integer line (Bresenham) from (x0,y0) to (x1,y1), inclusive.
+ *
+ * The converging grid lines used to be walked with integer-percent
+ * quantisation (t = vx*100/steps, then x interpolated on t). On the outer
+ * rays that advances x by 2 or more per row, which leaves diagonal gaps
+ * and reads as a dotted line rather than a solid one. Bresenham is
+ * 4-connected, so the ray is unbroken. */
+static void draw_boot_line(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                           uint16_t col)
 {
-    int16_t y;
+    int16_t dx = (int16_t)((x1 > x0) ? (x1 - x0) : (x0 - x1));
+    int16_t dy = (int16_t)((y1 > y0) ? (y1 - y0) : (y0 - y1));
+    int16_t sx = (int16_t)((x0 < x1) ? 1 : -1);
+    int16_t sy = (int16_t)((y0 < y1) ? 1 : -1);
+    int16_t err = (int16_t)(dx - dy);
 
-    for (y = SCANLINE_TOP; y <= SCANLINE_BOTTOM; y += 2) {
-        /* Only paint where something was actually drawn, otherwise the
-         * scanline would grey out the black sky and flatten the contrast. */
-        ST7735_FillRect(0, y, ST7735_WIDTH, 1, COL_SCAN);
+    for (;;) {
+        ST7735_DrawPixel(x0, y0, col);
+        if ((x0 == x1) && (y0 == y1)) {
+            break;
+        }
+        {
+            int16_t e2 = (int16_t)(err * 2);
+            if (e2 > -dy) { err = (int16_t)(err - dy); x0 = (int16_t)(x0 + sx); }
+            if (e2 <  dx) { err = (int16_t)(err + dx); y0 = (int16_t)(y0 + sy); }
+        }
     }
 }
 
@@ -408,7 +417,6 @@ static void draw_boot_scanlines(void)
 static void draw_boot_backdrop(void)
 {
     int16_t i;
-    int16_t vx;
 
     ST7735_FillScreen(COL_BG);
 
@@ -422,23 +430,16 @@ static void draw_boot_backdrop(void)
      * horizon centre, which is what sells the perspective. */
     for (i = -6; i <= 6; i++) {
         int16_t x_bottom = (int16_t)(SUN_CX + (i * (ST7735_WIDTH / 12)));
-        int16_t steps = (int16_t)(GRID_BOTTOM - GRID_TOP);
 
-        if ((steps <= 0) || (x_bottom < 0) || (x_bottom >= ST7735_WIDTH)) {
+        if ((x_bottom < 0) || (x_bottom >= ST7735_WIDTH)) {
             continue;
         }
-        for (vx = 0; vx <= steps; vx++) {
-            int16_t t = (int16_t)((vx * 100) / steps);
-            int16_t x = (int16_t)(SUN_CX + (((x_bottom - SUN_CX) * t) / 100));
-            ST7735_DrawPixel(x, (int16_t)(GRID_TOP + vx),
-                             (vx < (steps / 3)) ? COL_GRID_FAR : COL_GRID);
-        }
+        draw_boot_line(SUN_CX, GRID_TOP, x_bottom, GRID_BOTTOM, COL_GRID);
+        draw_boot_line(SUN_CX, GRID_TOP, x_bottom, GRID_TOP + 6, COL_GRID_FAR);
     }
 
     /* Paint the grid's leading edge so it is never empty on frame 0. */
     draw_boot_grid(0);
-
-    draw_boot_scanlines();
 
     /* Title stack, centred above the sun. */
     ST7735_DrawStringCentered(TITLE_Y, "AUDIO", COL_HEADER_ACC, COL_BG, 2);
@@ -470,7 +471,13 @@ static void show_boot_animation(void)
         /* Advance the grid's travelling highlight (~1.4 ms). */
         draw_boot_grid((int16_t)(step % GRID_ROWS));
 
-        /* Status line, redrawn in place each step. */
+        /* Status line. ERASE the whole band first: consecutive status
+         * strings have different lengths ("CLOCKS" is 6 chars, "DMA" is
+         * 3), so centring a shorter one over a longer one leaves the
+         * previous string's end pixels behind. Redrawing in place without
+         * clearing produced overlapping garbage -- legible as neither
+         * word on the glass. */
+        ST7735_FillRect(0, BOOT_READY_Y, ST7735_WIDTH, 8, COL_BG);
         ST7735_DrawStringCentered(BOOT_READY_Y, boot_status[step], COL_TEXT_DIM, COL_BG, 1);
 
         /* Progress fill, 2 px per step, colour-evolving like the old splash. */
