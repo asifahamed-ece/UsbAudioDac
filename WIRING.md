@@ -10,8 +10,8 @@ Single source of truth for every MCU↔peripheral connection. Sections **A/B are
 |---|---|---|---|---|
 | PA0 | DC (data/command) | GPIO out | — | ST7735S DC |
 | PA1 | RST | GPIO out | — | ST7735S RESET |
-| PA2 | TX | USART2 | AF7 | CH340 RX ⚠️ shared |
-| PA3 | RX | USART2 | AF7 | CH340 TX |
+| PA2 | TX | USART2 | AF7 | CH340 RX — *not enabled, see §E* |
+| PA3 | RX | USART2 | AF7 | CH340 TX — *not enabled, see §E* |
 | PA5 | SCK | SPI1 | AF5 | ST7735S SCL |
 | PA7 | MOSI | SPI1 | AF5 | ST7735S SDA |
 | PA11 | USB D- | USB OTG FS | — | USB-C (on-board) |
@@ -100,7 +100,13 @@ Single source of truth for every MCU↔peripheral connection. Sections **A/B are
 | PA11 / PA12 (D-/D+) | on-board USB-C | PC |
 | VBUS sensing | `vbus_sensing_enable = DISABLE` in `usbd_conf.c` | — |
 
-## C) Rotary Encoder — Phase 4 ⚡ PLAN (wire now)
+## C) Rotary Encoder — Phase 4 ⚡ PLAN (not built yet)
+
+> **Nothing here is wired, and no encoder behaviour exists in firmware.**
+> `AUDIO_VolumeCtl_FS` is a no-op (`UNUSED(vol); return USBD_OK;`) and there is no
+> software gain in the sample path, so the device has **no volume control at
+> all** today. This section is the plan for when you start Phase 4, not a
+> description of the current build.
 
 | EC11 Pin | → | MCU Pin | Function | Extra |
 |----------|---|---------|----------|-------|
@@ -124,7 +130,12 @@ PB8: GPIO_EXTI8, pull-up, falling edge (switch pulls low), EXTI8_IRQn
 Encoder wiring debounce: small RC (10 kΩ + 100 nF) per channel is optional.
 ```
 
-## D) ST7735S TFT — Phase 5 ⚡ PLAN (wire now)
+## D) ST7735S TFT — Phase 5 ✅ WIRED & WORKING
+
+> **Built and verified on the glass** (merged to `main` via PR #4). Note that
+> SPI1 is *not* a CubeMX peripheral here — `st7735.c` owns SPI1 entirely and
+> initialises it itself, so there is no `hspi1` in the `.ioc`. The settings
+> below are what the driver applies, not a `.ioc` diff to make.
 
 | Display Pin | → | MCU Pin | Function | Notes |
 |-------------|---|---------|----------|-------|
@@ -137,7 +148,7 @@ Encoder wiring debounce: small RC (10 kΩ + 100 nF) per channel is optional.
 | RESET | → | PA1 | GPIO out | active low |
 | LED | → | **3V3** | backlight | see conflict note ↓ |
 
-### CubeMX config (when Phase 5 starts)
+### SPI1 config (as applied by `st7735.c`)
 
 ```
 SPI1: Full-Duplex Master, 8-bit, MSB first, Mode 0 (CPOL=0, CPHA=0)
@@ -147,21 +158,29 @@ SPI1: Full-Duplex Master, 8-bit, MSB first, Mode 0 (CPOL=0, CPHA=0)
 PA0, PA1, PB0 = GPIO_Output (DC, RST, CS)
 ```
 
-## E) Debug UART — Optional (Phases 4–6)
+## E) Debug UART — NOT WIRED UP (no UART in the firmware)
 
 | MCU Pin | Function | → | CH340 |
 |---------|----------|---|-------|
 | PA2 | USART2_TX (AF7) | → | RX |
-| PA3 | USART2_RX (AF7) | → | TX |
 | GND | ground | → | GND |
 
-115200 8N1. Required only if you want `printf` debug output on-device.
+> **This is aspirational, not current.** As of the last build there is **no
+> USART2 in the firmware**: `MX_USART2_UART_Init` is never called, the UART HAL
+> driver is not in the `Makefile`, and `USBD_DEBUG_LEVEL` is `0`, which compiles
+> every `USBD_ErrLog` / `USBD_DbgLog` call to nothing. So an adapter plugged in
+> here would receive no bytes.
+>
+> On-device `printf` was dropped in favour of the IWDG watchdog plus SWD/GDB for
+> debugging. Wiring this up later means: enable USART2 in the `.ioc`, add the UART
+> driver to `C_SOURCES`, retarget `_write` to the UART, and raise
+> `USBD_DEBUG_LEVEL`. Until then, **don't buy a CH340/CP2102 for this project.**
 
 ---
 
 ## ⚠️ Conflicts & Rules
 
-1. **PA2 shared:** TFT backlight (GPIO) **vs** USART2_TX. → Tie TFT **LED → 3V3**, keep PA2 for debug UART. (Loses software backlight toggle only.)
+1. **PA2 shared:** TFT backlight (GPIO) **vs** USART2_TX. → Tie TFT **LED → 3V3**, as wired today. The conflict is currently moot because USART2 is unused (§E), but keep the backlight tied if you ever enable it, or you lose the software backlight toggle.
 2. **ST7735S is 3.3 V only** — reverse polarity or 5 V kills the display.
 3. **Common ground** — amplifier, display, MCU, and any debug adapter must share GND.
 4. **MAX98357A power:** 5 V gives full volume; if you run it from the same USB supply, a separate 5 V/2 A charger reduces USB-bus noise.
@@ -185,10 +204,10 @@ PA0, PA1, PB0 = GPIO_Output (DC, RST, CS)
         PB6  ◀─A──▶ EC11 ──B──▶ PB7               │   (Phase 4)
         PB8  ◀─SW── EC11 (GND), pull-ups →3V3      │
                        │                           │
-        PA5  ◀─SCK─▶ │  ST7735S TFT (3.3V only)   │   (Phase 5)
+        PA5  ◀─SCK─▶ │  ST7735S TFT (3.3V only)   │   (Phase 5, working)
         PA7  ◀─MOSI─▶│  CS=PB0, DC=PA0, RST=PA1,  │
                        │  LED→3V3                  │
                        │                           │
-        PA2 ──TX──▶ CH340 RX, PA3 ◀─RX── CH340 TX  │   (optional debug)
+        PA2 ──TX──▶ CH340 RX, PA3 ◀─RX── CH340 TX  │   (NOT enabled — no UART in fw)
                        └──────────────────────────┘
 ```

@@ -36,10 +36,10 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 | **MAX98357A** | I2S DAC + Class D amp module (3 W @ 4 Ω, ~1.7 W @ 8 Ω) | ✅ Owned |
 | **8 Ω speaker** (DCR ≈ 7 Ω) | Mono audio output | ✅ Owned |
 | **ST7735S 1.4" TFT** | Audio visualizer display (128x128, SPI) | ✅ Owned |
-| **Rotary encoder (EC11)** | Volume control + mute button | ⏳ To buy (~$1) |
-| **USB-Serial adapter (CH340/CP2102)** | `printf` debug over USART2 | ⏳ Optional (~$1-2) |
+| **Rotary encoder (EC11)** | Volume control + mute button — *Phase 4, not built* | ⏳ Only if you do Phase 4 |
 | **ST-Link V2** | Flash programmer and debugger | ✅ Owned |
 | **Passive components (R, C)** | Decoupling, filter, debounce | ✅ Owned |
+| ~~USB-Serial adapter (CH340/CP2102)~~ | ~~`printf` debug over USART2~~ | ❌ **Dropped** — no UART in the firmware |
 
 > **On amplifiers:** the MAX98357A is the *complete* DAC + amp for the mono speaker — it needs no second stage. The PAM8403 from the early plan was **descoped**: its line-level input cannot be driven from the MAX98357A's speaker-level output (cascading two power amps only distorts), so it had no role in a mono-speaker build. The 8 Ω speaker is verified by DCR: 7 Ω on the multimeter = nominal 8 Ω.
 
@@ -47,8 +47,8 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 
 - **Audio out (I2S2 → MAX98357A):** PB10=BCLK, PB12=WS/LRC, PB15=SDIN, GND, 3V3/5V=VIN
 - **USB OTG FS:** PA11=D-, PA12=D+
-- **Encoder (Phase 4, planned):** PB6=A, PB7=B (TIM4 encoder mode), PB8=button (EXTI, mute)
-- **TFT (Phase 5, planned):** SPI1 — see pinout below
+- **Encoder (Phase 4, planned):** PB6=A, PB7=B (TIM4 encoder mode), PB8=button (EXTI, mute) — *not wired; no volume control exists yet*
+- **TFT (Phase 5, working):** SPI1 — see pinout below
 
 ### ST7735S TFT Pinout (SPI)
 
@@ -74,14 +74,26 @@ A rotary encoder (Phase 4) will control volume, and an ST7735S TFT (Phase 5) wil
 | MAX98357A I2S DAC + amp | 1 | $0 | ✅ Owned |
 | 8 Ω speaker (DCR ~7 Ω) | 1 | $0 | ✅ Owned |
 | ST7735S 1.4" TFT (SPI) | 1 | $0 | ✅ Owned |
-| Rotary encoder (EC11) with push button | 1 | ~$1 | ⏳ **To buy** |
-| USB-Serial adapter (CH340) | 1 | ~$1-2 | ⏳ Optional |
 | Resistors / capacitors | various | $0 | ✅ Owned |
 | ST-Link V2 | 1 | — | ✅ Owned |
 | USB-C cable, jumpers, breadboard | — | — | ✅ Owned |
-| **Total to buy** | | | **~$1-3** |
+| Rotary encoder (EC11) + push button | 1 | ~$1 | ⏳ **Only for Phase 4** — see below |
+| **Total to buy** | | | **~$1, and only if you do Phase 4** |
 
-**Where to buy:** AliExpress (cheapest, slowest), Amazon (faster, pricier), or local electronics shops for passives. For the whole project, only the **EC11 encoder** is strictly required; the CH340 serial adapter is recommended for Phase 4-6 debug output.
+**Everything needed for the device as it stands today is already owned — total
+spend to get here: $0.** The EC11 encoder is the only outstanding part, and it
+buys you nothing that works yet: `AUDIO_VolumeCtl_FS` is a no-op and there is no
+software gain in the sample path, so **there is no volume control today**. Buy
+the encoder when you start Phase 4 (WIRING.md §C has the pinout).
+
+**Not needed:** a USB-serial (CH340/CP2102) adapter. The firmware has no UART —
+USART2 is never initialised, the UART driver isn't compiled, and
+`USBD_DEBUG_LEVEL` is `0`, so no `printf` is emitted. On-device debug output was
+dropped in favour of the IWDG watchdog and SWD/GDB. If you want it back, WIRING.md
+§E has the two-pin hookup.
+
+**Where to buy:** AliExpress (cheapest, slowest), Amazon (faster, pricier), or a
+local electronics shop for the EC11 and any passives.
 
 ---
 
