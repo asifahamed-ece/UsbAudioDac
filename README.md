@@ -142,7 +142,7 @@ After flashing, connect the Black Pill to your PC via USB-C:
 # Check USB enumeration
 lsusb -v | grep -A 10 "Audio"
 
-# Test with a 1 kHz sine tone
+# Test with a 1 kHz sine tone with 48k Bitrate from host
 speaker-test -D plughw:2,0 -c 1 -r 48000 -t sine -f 1000
 
 # Play a WAV file
